@@ -4,18 +4,35 @@
 
 <sup><sub>image: &copy; [SubSuid](http://subsuid.deviantart.com/art/River-Tam-Speed-Drawing-282223915)</sub></sup>
 
-A command line helper for interfacing with go packages
+It'd like a gorram CLI for any go package.
 
 Automagically understands how to produce an interface from the command line into a Go function.
 
-For example:
+## Examples
+
+Pretty print JSON:
 
 ```
-cat ugly.json | gorram json.Indent "" "\t"
+$ cat ugly.json | gorram encoding/json.Indent "" $'\t'
+{
+    "foo" : "bar"
+}
 ```
 
-The above will run encoding/json.Indent, with src = stdin and dst being a bytes.Buffer that gets written to stdout 
-if json.Indent returns without an error.
+Calculate a sha256 sum:
+
+```
+$ gorram crypto/sha256.Sum256 foo.gz
+
+abcdef012345678
+```
 
 
+## How it works
+
+The first time you run Gorram with a specific function name, Gorram analyzes the package function and generates code that is compiled into a go binary.  Gorram intelligently converts stdin or cli arguments into string, []byte, io.Reader, or bytes.Buffer arguments for the function. Output is converted similarly to stdout.
+
+## Future
+
+Support packages other than stdlib.
 
