@@ -11,6 +11,21 @@
 // error.
 package main
 
+import (
+	"log"
+	"os"
+
+	"github.com/natefinch/gorram/cli"
+	"github.com/natefinch/gorram/run"
+)
+
 func main() {
-	// Magic goes here.
+	log.SetFlags(0)
+	cmd, args, err := cli.Parse(os.Args[1:])
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := run.Run(cmd, args); err != nil {
+		log.Fatal(err)
+	}
 }
