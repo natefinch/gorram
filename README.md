@@ -13,7 +13,7 @@ Automagically understands how to produce an interface from the command line into
 Pretty print JSON:
 
 ```
-$ cat ugly.json | gorram encoding/json.Indent "" $'\t'
+$ echo '{ "foo" : "bar" }' | gorram encoding/json.Indent "" $'\t'
 {
     "foo" : "bar"
 }
@@ -30,9 +30,7 @@ abcdef012345678
 
 ## How it works
 
-The first time you run Gorram with a specific function name, Gorram analyzes the package function and generates code that is compiled into a go binary.  Gorram intelligently converts stdin or cli arguments into string, []byte, io.Reader, or bytes.Buffer arguments for the function. Output is converted similarly to stdout.
+The first time you run Gorram with a specific function name, Gorram analyzes the package function and generates a file for use with `go run`.  Gorram intelligently converts stdin or cli arguments into string, []byte, io.Reader, or bytes.Buffer arguments for the function. Output is converted similarly to stdout.  The code is cached in a local directory so that later runs don't incur the generation overhead.
 
-## Future
 
-Support packages other than stdlib.
 
