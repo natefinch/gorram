@@ -4,7 +4,7 @@
 
 <sup><sub>image: &copy; [SubSuid](http://subsuid.deviantart.com/art/River-Tam-Speed-Drawing-282223915)</sub></sup>
 
-It'd like a gorram CLI for any go package.
+It's like go run for any go function.
 
 Automagically understands how to produce an interface from the command line into a Go function.
 
@@ -30,9 +30,7 @@ abcdef012345678
 
 ## How it works
 
-The first time you run Gorram with a specific function name, Gorram analyzes the package function and generates a .go file, which is then run with go run.  Gorram intelligently converts stdin or cli arguments into string, []byte, io.Reader, or bytes.Buffer arguments for the function. Output is converted similarly to stdout.
+The first time you run Gorram with a specific function name, Gorram analyzes the package function and generates a file for use with `go run`.  Gorram intelligently converts stdin or cli arguments into string, []byte, io.Reader, or bytes.Buffer arguments for the function. Output is converted similarly to stdout.  The code is cached in a local directory so that later runs don't incur the generation overhead.
 
-## Future
 
-Support packages other than stdlib.
 
