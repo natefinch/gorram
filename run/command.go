@@ -130,13 +130,20 @@ func gen(cmd Command, data templateData) (path string, err error) {
 }
 
 type templateData struct {
-	NumResults int
-	NumParams  int
-	ImportPath string
-	PkgName    string
-	Func       string
-	InputIdx   int
-	HasError   bool
+	NumResults  int
+	NumParams   int
+	ImportPath  string
+	PkgName     string
+	Func        string
+	SrcIdx      int
+	DstIdx      int
+	HasError    bool
+	HasLen      bool
+	ArgsToSrc   string
+	StdinToSrc  string
+	DstInit     string
+	DstToStdout string
+	ParamTypes  map[types.Type]struct{}
 }
 
 func compileData(cmd Command, sig *types.Signature) (templateData, error) {
@@ -150,13 +157,65 @@ func compileData(cmd Command, sig *types.Signature) (templateData, error) {
 		PkgName:    cmd.Package,
 		Func:       cmd.Function,
 		HasError:   hasError(sig),
+		HasLen:     hasLen(sig),
+		SrcIdx:     -1,
+		DstIdx:     -1,
+		ParamTypes: map[types.Type]struct{}{},
 	}
-	src, dst, ok := checkSrcDst(sig.Params())
-	for x := 0; x < sig.Params().Len(); x++ {
-		p := sig.Params().At(x)
+	if src, dst, ok := checkSrcDst(sig.Params()); ok {
+		if err := data.setSrcDst(src, dst, sig.Params()); err != nil {
+			return templateData{}, err
+		}
+	}
+	if err := data.parseParams(sig.Params()); err != nil {
+		return templateData{}, err
+	}
 
-	}
 	return data, nil
+}
+
+func (data *templateData) setSrcDst(src, dst int, params *types.Tuple) error {
+	data.SrcIdx = src
+	data.DstIdx = dst
+	srcType := params.At(src).Type()
+	s, ok := argsToSrcFuncs[srcType]
+	if !ok {
+		return fmt.Errorf("should be impossible: src type %q has no args conversion func", srcType)
+	}
+	data.ArgsToSrc = fmt.Sprintf(s, src)
+	s, ok = stdinToSrcFuncs[srcType]
+	if !ok {
+		return fmt.Errorf("should be impossible: src type %q has no stdin conversion func", srcType)
+	}
+	data.StdinToSrc = s
+
+	dstType := params.At(dst).Type()
+	s, ok = dstInit[dstType]
+	if !ok {
+		return fmt.Errorf("should be impossible: dst type %q has no init value", dstType)
+	}
+	data.DstInit = s
+	s, ok = dstToStdoutFuncs[dstType]
+	if !ok {
+		return fmt.Errorf("should be impossible: dst type %q has no stdout conversion func", dstType)
+	}
+	data.StdinToSrc = s
+	return nil
+}
+
+func (data *templateData) parseParams(params *types.Tuple) error {
+	for x := 0; x < params.Len(); x++ {
+		if x == data.SrcIdx || x == data.DstIdx {
+			continue
+		}
+		p := params.At(x)
+		t := p.Type()
+		if _, ok := argToBuiltin[t]; !ok {
+			return fmt.Errorf("don't understand how to convert arg %q from CLI", p.Name())
+		}
+		data.ParamTypes[t] = struct{}{}
+	}
+	return nil
 }
 
 func checkSrcDst(params *types.Tuple) (dst, src int, ok bool) {
@@ -224,14 +283,16 @@ func hasError(sig *types.Signature) bool {
 	return false
 }
 
-var funcs = template.FuncMap{
-	// The name "inc" is what the function will be called in the template text.
-	"inc": func(i int) int {
-		return i + 1
-	},
-	"dec": func(i int) int {
-		return i - 1
-	},
+// hasLen determines if the function returns a value indicating a number of
+// bytes written.  This is a common go idiom, and is usually the first value
+// returned, with a variable name called n of type int.
+func hasLen(sig *types.Signature) bool {
+	if sig.Results().Len() > 0 {
+		// We only care about the last value.
+		val := sig.Results().At(0)
+		return val.Name() == "n" && types.Identical(val.Type(), types.Typ[types.Int])
+	}
+	return false
 }
 
 var templ = template.Must(template.New("").Parse(`
@@ -307,5 +368,147 @@ func main() {
 }
 `))
 
-// for [N]byte output
-// if _, err := fmt.Fprintf(os.Stdout, "%x\n", val); err != nil {
+// argsToSrcFuncs holds the definitions of functions we put at the bottom of the
+// file to convert the src CLI arg into the proper format for the function.  It
+// is expected to contain a format directive taking the index of the src arg
+// from the cli args.
+var argsToSrcFuncs = map[types.Type]string{
+	byteSliceType: `
+func argsToSrc(args []string) ([]byte, []string) {
+	srcIdx := %d
+	src, err = ioutil.ReadFile(args[srcIdx])
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Take out the src arg.
+	args = append(args[:srcIdx], args[srcIdx+1]...)
+	return src, args
+}
+`,
+	ioReaderType: `
+func argsToSrc(args []string) (io.Reader, []string) {
+	srcIdx := %d
+	// yes, I know I never close this. It gets closed when the process exits.
+	// it's ugly, but it works.
+	src, err = os.Open(args[srcIdx])
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Take out the src arg.
+	args = append(args[:srcIdx], args[srcIdx+1]...)
+	return src, args
+}
+`,
+}
+
+var stdinToSrcFuncs = map[types.Type]string{
+	byteSliceType: `
+func stdinToSrc() []byte {
+	src, err = ioutil.ReadAll(os.Stdin)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return src
+}
+`,
+	ioReaderType: `
+func stdinToSrc() io.Reader {
+	return os.Stdin
+}
+`,
+}
+
+var dstToStdoutFuncs = map[types.Type]string{
+	ptrBytesBufferType: `
+	if _, err := io.Copy(os.Stdout, dst); err != nil {
+		log.Fatal(err)
+	}
+`,
+	ioWriterType: "", // we pass in os.Stdout right into the function.
+}
+
+var dstInit = map[types.Type]string{
+	ptrBytesBufferType: "dst := &bytes.Buffer{}",
+	ioWriterType:       "dst := os.Stdout",
+}
+
+var argToBuiltin = map[types.Type]string{
+	types.Typ[types.String]:  "arg%d = args[%d]",
+	types.Typ[types.Int]:     "arg%d = argToInt(args[%d])",
+	types.Typ[types.Uint]:    "arg%d = argToUint(args[%d])",
+	types.Typ[types.Int64]:   "arg%d = argToInt64(args[%d])",
+	types.Typ[types.Uint64]:  "arg%d = argToUint64(args[%d])",
+	types.Typ[types.Bool]:    "arg%d = argToBool(args[%d])",
+	types.Typ[types.Float64]: "arg%d = argToFloat64(args[%d])",
+}
+
+const (
+	arrayOutput = `
+	if _, err := fmt.Fprintf(os.Stdout, "%x\n", val); err != nil {
+		log.Fatal(err)
+	}
+`
+
+	errCheck = `
+	if err != nil {
+		log.Fatal(err)
+	}
+`
+)
+
+var argToBuiltinFuncs = map[types.Type]string{
+	types.Typ[types.Int]: `
+func argToInt(s string) int {
+	i, err := strconv.ParseInt(s, 0, 0)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return int(i)
+}
+`,
+	types.Typ[types.Uint]: `
+func argToUint(s string) int {
+	u, err := strconv.ParseUint(s, 0, 0)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return uint(u)
+}
+`,
+	types.Typ[types.Float64]: `
+func argToFloat64(s string) float64 {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return f
+}
+`,
+	types.Typ[types.Bool]: `
+func argToBool(s string) bool {
+	b, err := strconv.ParseBool(s)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return b
+}
+`,
+	types.Typ[types.Int64]: `
+func argToInt64(s string) int64 {
+	i, err := strconv.ParseInt(s, 0, 64)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return i
+}
+`,
+	types.Typ[types.Uint64]: `
+func argToUint(s string) uint64 {
+	u, err := strconv.ParseUint(s, 0, 64)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return u
+}
+`,
+}

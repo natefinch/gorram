@@ -56,9 +56,9 @@ function:
 func Sum(data []byte) [Size]byte
 ```
 
-Gorram understands functions that take a slice of bytes (or an io.Reader) should be
-given stdin, or if an argument is specified, the argument is treated as a
-filename to open.
+Gorram understands functions that take a single slice of bytes (or an io.Reader)
+should read from stdin, or if an argument is specified, the argument is treated
+as a filename to be read.
 
 Return values that are an array of bytes are understood to be intended to be
 printed with fmt's %x, so that you get `2c37424d58` instead of `[44 55 66 77
@@ -87,20 +87,6 @@ nothing is written to stdout.
 Gorram understands that prefix and indent are arguments that need to be
 specified in the command line.
 
-```
-usage:
-$ cat foo.txt | gorram encoding/base64.StdEncoding.Decode
-or
-$ gorram encoding/base64.StdEncoding.Decode foo.txt
-
-function:
-// encoding/base64
-func (e *Encoding) Decode(dst, src []byte) (n int, err error)
-```
-
-Gorram understands global variables have methods that you can call.  Gorram
-understands that if a function is writing data to a writer or []bytes that it
-may have a return value called "n int" which it will generally ignore.
 
 ```
 usage:
