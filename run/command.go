@@ -8,6 +8,8 @@ import (
 	"log"
 	"os/exec"
 	"path"
+	"sort"
+	"strings"
 	"text/template"
 
 	"golang.org/x/tools/go/loader"
@@ -130,20 +132,24 @@ func gen(cmd Command, data templateData) (path string, err error) {
 }
 
 type templateData struct {
-	NumResults  int
-	NumParams   int
-	ImportPath  string
-	PkgName     string
-	Func        string
-	SrcIdx      int
-	DstIdx      int
-	HasError    bool
-	HasLen      bool
-	ArgsToSrc   string
-	StdinToSrc  string
-	DstInit     string
-	DstToStdout string
-	ParamTypes  map[types.Type]struct{}
+	NumResults   int
+	NumParams    int
+	NumCLIParams int
+	PkgName      string
+	Func         string
+	SrcIdx       int
+	DstIdx       int
+	HasError     bool
+	HasLen       bool
+	SrcInit string
+	ArgsToSrc    string
+	StdinToSrc   string
+	DstInit      string
+	DstToStdout  string
+	ParamTypes   map[types.Type]struct{}
+	Imports      map[string]struct{}
+	ArgConvFuncs []string
+	ArgInits []string
 }
 
 func compileData(cmd Command, sig *types.Signature) (templateData, error) {
@@ -153,14 +159,17 @@ func compileData(cmd Command, sig *types.Signature) (templateData, error) {
 	data := templateData{
 		NumResults: sig.Results().Len(),
 		NumParams:  sig.Params().Len(),
-		ImportPath: path.Base(cmd.Package),
-		PkgName:    cmd.Package,
+		PkgName:    path.Base(cmd.Package),
 		Func:       cmd.Function,
 		HasError:   hasError(sig),
 		HasLen:     hasLen(sig),
 		SrcIdx:     -1,
 		DstIdx:     -1,
 		ParamTypes: map[types.Type]struct{}{},
+		Imports: map[string]struct{}{
+			cmd.Package: struct{}{},
+			"log":       struct{}{},
+		},
 	}
 	if src, dst, ok := checkSrcDst(sig.Params()); ok {
 		if err := data.setSrcDst(src, dst, sig.Params()); err != nil {
@@ -178,43 +187,75 @@ func (data *templateData) setSrcDst(src, dst int, params *types.Tuple) error {
 	data.SrcIdx = src
 	data.DstIdx = dst
 	srcType := params.At(src).Type()
-	s, ok := argsToSrcFuncs[srcType]
+	srcH, ok := srcHandlers[srcType]
 	if !ok {
-		return fmt.Errorf("should be impossible: src type %q has no args conversion func", srcType)
+		return fmt.Errorf("should be impossible: src type %q has no handler", srcType)
 	}
-	data.ArgsToSrc = fmt.Sprintf(s, src)
-	s, ok = stdinToSrcFuncs[srcType]
-	if !ok {
-		return fmt.Errorf("should be impossible: src type %q has no stdin conversion func", srcType)
+	data.ArgsToSrc = fmt.Sprintf(srcH.ArgToSrc, src)
+	data.StdinToSrc = srcH.StdinToSrc
+	for _, imp := range srcH.Imports {
+		data.Imports[imp] = struct{}{}
 	}
-	data.StdinToSrc = s
+	data.SrcInit = srcH.Init
 
 	dstType := params.At(dst).Type()
-	s, ok = dstInit[dstType]
+	dstH, ok := dstHandlers[dstType]
 	if !ok {
-		return fmt.Errorf("should be impossible: dst type %q has no init value", dstType)
+		return fmt.Errorf("should be impossible: dst type %q has no handler", dstType)
 	}
-	data.DstInit = s
-	s, ok = dstToStdoutFuncs[dstType]
-	if !ok {
-		return fmt.Errorf("should be impossible: dst type %q has no stdout conversion func", dstType)
+	data.DstInit = dstH.Init
+	data.DstToStdout = dstH.ToStdout
+	for _, imp := range dstH.Imports {
+		data.Imports[imp] = struct{}{}
 	}
-	data.StdinToSrc = s
 	return nil
 }
 
+func (data *templateData) ImportStatements() string {
+	imports := make([]string, len(data.Imports), 0)
+	for imp := range data.Imports {
+		imports = append(imports, imp)
+	}
+	sort.Strings(imports)
+	return "\t" + strings.Join(imports, "\n\t")
+}
+
 func (data *templateData) parseParams(params *types.Tuple) error {
+	pos := 1
 	for x := 0; x < params.Len(); x++ {
 		if x == data.SrcIdx || x == data.DstIdx {
+			// we convert these elsewhere.
 			continue
 		}
 		p := params.At(x)
 		t := p.Type()
-		if _, ok := argToBuiltin[t]; !ok {
+		conv, ok := argConverters[t] 
+		if !ok {
 			return fmt.Errorf("don't understand how to convert arg %q from CLI", p.Name())
 		}
 		data.ParamTypes[t] = struct{}{}
+		data.ArgInits = append(data.ArgInits, fmt.Sprinf(conv.Assign, pos))
+		pos++
 	}
+	for t := range data.ParamTypes {
+		data.ArgConvFuncs = append(data.ArgConvFuncs, argConverters[t].Func)
+		for _, imp := range argConverters[t].Imports {
+			data.Imports[imp] = struct{}{}
+		}
+	}
+	data.NumCLIArgs = params.Len()
+	if data.DstIdx != -1 {
+		data.NumCLIArgs--
+	}
+
+	data.NumNonSrcCLIArgs = data.NumCLIArgs
+	if data.SrcIdx != -1 {
+		data.NumNonSrcCLIArgs--
+	}
+	
+
+	// sort so we have consistent output.
+	sort.Strings(data.ArgConvFuncs)
 	return nil
 }
 
@@ -240,17 +281,13 @@ func checkSrcDst(params *types.Tuple) (dst, src int, ok bool) {
 }
 
 func isDstType(t types.Type) bool {
-	return types.Identical(t, ptrBytesBufferType) ||
-		types.Identical(t, byteSliceType) ||
-		types.Implements(t, ioWriter)
-	// anything else?
+	_, ok := dstHandlers[t]
+	return ok
 }
 
 func isSrcType(t types.Type) bool {
-	return types.Identical(t, byteSliceType) ||
-		types.Identical(t, byteSliceType) ||
-		types.Implements(t, ioWriter)
-	// anything else?
+	_, ok := srcHandlers[t]
+	return ok
 }
 
 // validateResults ensures that the return value on the signature is one that we
@@ -295,53 +332,6 @@ func hasLen(sig *types.Signature) bool {
 	return false
 }
 
-var templ = template.Must(template.New("").Parse(`
-package main
-
-import (
-	"fmt"
-	"io/ioutil"
-	"log"
-	"os"
-	{{ if not (eq .ImportPath "log" "fmt" "os" "io/ioutil") }}
-	"{{.ImportPath}}"
-	{{- end -}}
-)
-
-func main() {
-	log.SetFlags(0)
-	// strip off the executable name and the -- that we put in so that go run
-	// won't treat arguments to the script as files to run.
-	args := os.Args[2:]
-	var data []byte
-	switch len(args) {
-	{{ if and (.StreamIdx gt -1) (.Params.Len gt 0) -}}
-	case {{dec(.Params.Len)}}:
-		// read from stdin
-		b, err := ioutil.ReadAll(os.Stdin)
-		if err != nil {
-			log.Fatal(err)
-		}
-		data = b
-	{{- end }}
-	case  {{.Params.Len}}:
-		// treat it as a filename
-		b, err := ioutil.ReadFile(args[0])
-		if err != nil {
-			log.Fatal(err)
-		}
-		data = b
-	default:
-		log.Fatalf("Expected 0 or 1 arguments, but got %d args.\n\n", len(args))
-	}
-
-	val := md5.Sum(data)
-	if _, err := fmt.Fprintf(os.Stdout, "%x\n", val); err != nil {
-		log.Fatal(err)
-	}
-}
-`))
-
 // Our simplest case - no args, one return, like time.Now().
 var zeroOne = template.Must(template.New("").Parse(`
 package main
@@ -368,12 +358,27 @@ func main() {
 }
 `))
 
-// argsToSrcFuncs holds the definitions of functions we put at the bottom of the
-// file to convert the src CLI arg into the proper format for the function.  It
-// is expected to contain a format directive taking the index of the src arg
-// from the cli args.
-var argsToSrcFuncs = map[types.Type]string{
-	byteSliceType: `
+type srcHandler struct {
+	// Imports holds the packages needed for the functions this handler uses.
+	Imports []string
+	// Init holds the line that initializes the src variable.
+	Init string
+	// ArgToSrc holds the definition of a function that is put at the bottom of the
+	// file to convert the src CLI arg into the proper format for the function.  It
+	// is expected to contain a %d format directive taking the index of the src arg
+	// from the cli args.
+	ArgToSrc string
+	// StdInToSrc holds the definition of a function that is put at the bottom
+	// of the file to convert data sent to stdin into a format suitable to pass
+	// to the function.
+	StdinToSrc string
+}
+
+var srcHandlers = map[types.Type]srcHandler{
+	byteSliceType: srcHandler{
+		Imports: []string{"io/ioutil", "log"},
+		Init:    "var src []byte",
+		ArgToSrc: `
 func argsToSrc(args []string) ([]byte, []string) {
 	srcIdx := %d
 	src, err = ioutil.ReadFile(args[srcIdx])
@@ -385,11 +390,24 @@ func argsToSrc(args []string) ([]byte, []string) {
 	return src, args
 }
 `,
-	ioReaderType: `
+		StdinToSrc: `
+func stdinToSrc() []byte {
+	src, err = ioutil.ReadAll(os.Stdin)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return src
+}
+`},
+
+	ioReaderType: srcHandler{
+		Imports: []string{"io", "os"},
+		Init : "var src io.Reader"
+		ArgToSrc: `
 func argsToSrc(args []string) (io.Reader, []string) {
 	srcIdx := %d
 	// yes, I know I never close this. It gets closed when the process exits.
-	// it's ugly, but it works.
+	// It's ugly, but it works and it simplifies the code.  Sorry.
 	src, err = os.Open(args[srcIdx])
 	if err != nil {
 		log.Fatal(err)
@@ -399,56 +417,53 @@ func argsToSrc(args []string) (io.Reader, []string) {
 	return src, args
 }
 `,
-}
-
-var stdinToSrcFuncs = map[types.Type]string{
-	byteSliceType: `
-func stdinToSrc() []byte {
-	src, err = ioutil.ReadAll(os.Stdin)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return src
-}
-`,
-	ioReaderType: `
+		StdinToSrc: `
 func stdinToSrc() io.Reader {
 	return os.Stdin
 }
-`,
+`},
 }
 
-var dstToStdoutFuncs = map[types.Type]string{
-	ptrBytesBufferType: `
+// dstHandler contains the code to handle destination arguments in a function.
+type dstHandler struct {
+	// Imports holds the packages needed for the functions this handler uses.
+	Imports []string
+	// Init contains the initialization line necessary for creating a variable
+	// called dst that is used in functions that have a source and destination
+	// arguments.
+	Init string
+	//  ToStdout contains the code that handles writing the data written to dst
+	//  to stdout.
+	ToStdout string
+}
+
+var dstHandlers = map[types.Type]dstHandler{
+	ptrBytesBufferType: dstHandler{
+		Imports: []string{"bytes"},
+		Init:    "dst := &bytes.Buffer{}",
+		ToStdout: `
 	if _, err := io.Copy(os.Stdout, dst); err != nil {
 		log.Fatal(err)
 	}
-`,
-	ioWriterType: "", // we pass in os.Stdout right into the function.
-}
-
-var dstInit = map[types.Type]string{
-	ptrBytesBufferType: "dst := &bytes.Buffer{}",
-	ioWriterType:       "dst := os.Stdout",
-}
-
-var argToBuiltin = map[types.Type]string{
-	types.Typ[types.String]:  "arg%d = args[%d]",
-	types.Typ[types.Int]:     "arg%d = argToInt(args[%d])",
-	types.Typ[types.Uint]:    "arg%d = argToUint(args[%d])",
-	types.Typ[types.Int64]:   "arg%d = argToInt64(args[%d])",
-	types.Typ[types.Uint64]:  "arg%d = argToUint64(args[%d])",
-	types.Typ[types.Bool]:    "arg%d = argToBool(args[%d])",
-	types.Typ[types.Float64]: "arg%d = argToFloat64(args[%d])",
+`},
+	ioWriterType: dstHandler{
+		Imports: []string{"os"},
+		Init:    "dst := os.Stdout",
+		// no ToStdout needed, since dst *is* stdout.
+	},
 }
 
 const (
+	// arrayOutput is the text we dump instead of using %v to print out return
+	// values.  Most functions that return an array of bytes intend for them to
+	// be printed out with %x, so that you get a hex string, instead of a bunch
+	// of byte values.
 	arrayOutput = `
 	if _, err := fmt.Fprintf(os.Stdout, "%x\n", val); err != nil {
 		log.Fatal(err)
 	}
 `
-
+	// yay go!  (no, really, I actually do like go's error handling)
 	errCheck = `
 	if err != nil {
 		log.Fatal(err)
@@ -456,8 +471,39 @@ const (
 `
 )
 
-var argToBuiltinFuncs = map[types.Type]string{
-	types.Typ[types.Int]: `
+// converter is a type that holds information about argument conversions from
+// CLI strings to function arguments of various types.  If a function takes an
+// argument that is not declared here, and is not a destination or source
+// argument, we can't handle it.
+type converter struct {
+	// Assign is a format string that is used to make the conversion between CLI
+	// arg x and function arg y in the body of the main function.  It should
+	// take the cli arg index and the function arg index as %d format values.
+	// Ideally, it is a single line of code, which may call a helper function.
+	// If it calls a helper function, that function must be listed in Func.
+	Assign string
+	// Imports is the list of imports that Func uses, so we can make sure
+	// they're added to the list of imports.
+	Imports []string
+	// Func is the declaration of the conversion function between a string (the
+	// CLI arg) and a given type.  It must only return a single value of the
+	// appropriate type.  Errors should be handled with log.Fatal(err).  It
+	// should be named argTo<type> to avoid collision with other conversion
+	// function.
+	Func string
+}
+
+// argConverters is a map of types to helper functions that we dump at the
+// end of the file to make the rest of the file easier to construct and read.  The values
+var argConverters = map[types.Type]converter{
+	// string is a special flower because it doesn't need a converter, but we
+	// keep an empty converter here so that we don't need to special case it
+	// elsewhere.
+	types.Typ[types.String]: converter{Assign: "arg%d = args[%d]"},
+	types.Typ[types.Int]: converter{
+		Assign:  "arg%d := argToInt(args[%d])",
+		Imports: []string{"strconv", "log"},
+		Func: `
 func argToInt(s string) int {
 	i, err := strconv.ParseInt(s, 0, 0)
 	if err != nil {
@@ -465,8 +511,11 @@ func argToInt(s string) int {
 	}
 	return int(i)
 }
-`,
-	types.Typ[types.Uint]: `
+`},
+	types.Typ[types.Uint]: converter{
+		Assign:  "arg%d := argToUint(args[%d])",
+		Imports: []string{"strconv", "log"},
+		Func: `
 func argToUint(s string) int {
 	u, err := strconv.ParseUint(s, 0, 0)
 	if err != nil {
@@ -474,8 +523,11 @@ func argToUint(s string) int {
 	}
 	return uint(u)
 }
-`,
-	types.Typ[types.Float64]: `
+`},
+	types.Typ[types.Float64]: converter{
+		Assign:  "arg%d := argToFloat64(args[%d])",
+		Imports: []string{"strconv", "log"},
+		Func: `
 func argToFloat64(s string) float64 {
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
@@ -483,8 +535,11 @@ func argToFloat64(s string) float64 {
 	}
 	return f
 }
-`,
-	types.Typ[types.Bool]: `
+`},
+	types.Typ[types.Bool]: converter{
+		Assign:  "arg%d := argToBool(args[%d])",
+		Imports: []string{"strconv", "log"},
+		Func: `
 func argToBool(s string) bool {
 	b, err := strconv.ParseBool(s)
 	if err != nil {
@@ -492,8 +547,11 @@ func argToBool(s string) bool {
 	}
 	return b
 }
-`,
-	types.Typ[types.Int64]: `
+`},
+	types.Typ[types.Int64]: converter{
+		Assign:  "arg%d := argToInt64(args[%d])",
+		Imports: []string{"strconv", "log"},
+		Func: `
 func argToInt64(s string) int64 {
 	i, err := strconv.ParseInt(s, 0, 64)
 	if err != nil {
@@ -501,8 +559,11 @@ func argToInt64(s string) int64 {
 	}
 	return i
 }
-`,
-	types.Typ[types.Uint64]: `
+`},
+	types.Typ[types.Uint64]: converter{
+		Assign:  "arg%d := argToUint64(args[%d])",
+		Imports: []string{"strconv", "log"},
+		Func: `
 func argToUint(s string) uint64 {
 	u, err := strconv.ParseUint(s, 0, 64)
 	if err != nil {
@@ -510,5 +571,5 @@ func argToUint(s string) uint64 {
 	}
 	return u
 }
-`,
+`},
 }
