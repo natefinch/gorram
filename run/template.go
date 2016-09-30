@@ -11,7 +11,6 @@ import (
 
 func main() {
 	log.SetFlags(0)
-	expectedCLIArgs := {{.NumCLIArgs}}
 
 	{{.SrcInit}}
 
@@ -19,7 +18,8 @@ func main() {
 	// won't treat arguments to the script as files to run.
 	args := os.Args[2:]
 
-	{{if .SrcIdx ne -1}}
+	{{if ne .SrcIdx -1}}
+	expectedCLIArgs := {{.NumCLIArgs}}
 	switch len(args) {
 	case expectedCLIArgs - 1:
 		src = stdinToSrc()
@@ -36,7 +36,7 @@ func main() {
 
 	{{.Results}}{{.PkgName}}.{{.Func}}({{.Args}})
 	{{.ErrCheck}}
-	{{if .DstIdx ne -1}}
+	{{if ne .DstIdx -1}}
 	{{.DstToStdout}}
 	{{else}}
 	{{.PrintVal}}

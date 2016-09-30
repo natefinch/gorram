@@ -131,24 +131,26 @@ func gen(cmd Command, data templateData) (path string, err error) {
 }
 
 type templateData struct {
-	Results      string
-	Args         string
-	PkgName      string
-	Func         string
-	SrcIdx       int
-	DstIdx       int
-	ErrCheck     string
-	HasLen       bool
-	SrcInit      string
-	ArgsToSrc    string
-	StdinToSrc   string
-	DstInit      string
-	DstToStdout  string
-	PrintVal     string
-	ParamTypes   map[types.Type]struct{}
-	Imports      map[string]struct{}
-	ArgConvFuncs []string
-	ArgInits     []string
+	Results          string
+	Args             string
+	NumCLIArgs       int
+	PkgName          string
+	Func             string
+	SrcIdx           int
+	DstIdx           int
+	ErrCheck         string
+	HasLen           bool
+	SrcInit          string
+	ArgsToSrc        string
+	StdinToSrc       string
+	DstInit          string
+	DstToStdout      string
+	PrintVal         string
+	ParamTypes       map[types.Type]struct{}
+	Imports          map[string]struct{}
+	ArgConvFuncs     []string
+	ArgInits         []string
+	ImportStatements string
 }
 
 func compileData(cmd Command, sig *types.Signature) (templateData, error) {
@@ -162,6 +164,7 @@ func compileData(cmd Command, sig *types.Signature) (templateData, error) {
 		Imports: map[string]struct{}{
 			cmd.Package: struct{}{},
 			"log":       struct{}{},
+			"os":        struct{}{},
 		},
 	}
 	if err := data.parseResults(sig.Results()); err != nil {
@@ -175,7 +178,11 @@ func compileData(cmd Command, sig *types.Signature) (templateData, error) {
 	if err := data.parseParams(sig.Params()); err != nil {
 		return templateData{}, err
 	}
-
+	data.NumCLIArgs = sig.Params().Len()
+	if data.DstIdx != -1 {
+		data.NumCLIArgs--
+	}
+	data.ImportStatements = data.importStatements()
 	return data, nil
 }
 
@@ -207,10 +214,10 @@ func (data *templateData) setSrcDst(src, dst int, params *types.Tuple) error {
 	return nil
 }
 
-func (data *templateData) ImportStatements() string {
-	imports := make([]string, len(data.Imports), 0)
+func (data *templateData) importStatements() string {
+	imports := make([]string, 0, len(data.Imports))
 	for imp := range data.Imports {
-		imports = append(imports, imp)
+		imports = append(imports, `"`+imp+`"`)
 	}
 	sort.Strings(imports)
 	return "\t" + strings.Join(imports, "\n\t")
@@ -236,7 +243,7 @@ func (data *templateData) parseParams(params *types.Tuple) error {
 		}
 		args = append(args, fmt.Sprintf("arg%d", pos))
 		data.ParamTypes[t] = struct{}{}
-		data.ArgInits = append(data.ArgInits, fmt.Sprintf(conv.Assign, pos))
+		data.ArgInits = append(data.ArgInits, fmt.Sprintf(conv.Assign, pos, x))
 		pos++
 	}
 	data.Args = strings.Join(args, ", ")
@@ -317,6 +324,7 @@ func (data *templateData) parseResults(results *types.Tuple) error {
 		if types.Identical(results.At(0).Type().Underlying(), errorType) {
 			data.Results = "err := "
 			data.ErrCheck = errCheck
+			data.Imports["log"] = struct{}{}
 			return nil
 		}
 		if hasLen(results) {
@@ -325,6 +333,8 @@ func (data *templateData) parseResults(results *types.Tuple) error {
 		}
 		data.Results = "val := "
 		data.PrintVal = justPrintIt
+		data.Imports["os"] = struct{}{}
+		data.Imports["fmt"] = struct{}{}
 		return nil
 	case 2:
 		// val, err is ok.
@@ -332,11 +342,14 @@ func (data *templateData) parseResults(results *types.Tuple) error {
 			if hasLen(results) {
 				data.Results = "_, err := "
 				data.ErrCheck = errCheck
+				data.Imports["log"] = struct{}{}
 				return nil
 			}
 			data.Results = "val, err := "
 			data.ErrCheck = errCheck
 			data.PrintVal = justPrintIt
+			data.Imports["os"] = struct{}{}
+			data.Imports["fmt"] = struct{}{}
 			return nil
 		}
 		return errors.New("can't understand function with multiple non-error return values")
