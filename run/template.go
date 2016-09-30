@@ -1,6 +1,6 @@
 package run
 
-import "html/template"
+import "text/template"
 
 var templ = template.Must(template.New("").Parse(`
 package main
@@ -11,15 +11,15 @@ import (
 
 func main() {
 	log.SetFlags(0)
-    expectedCLIArgs := {{.NumCLIArgs}}
+	expectedCLIArgs := {{.NumCLIArgs}}
 
-    {{.SrcInit}}
+	{{.SrcInit}}
 
 	// strip off the executable name and the -- that we put in so that go run
 	// won't treat arguments to the script as files to run.
 	args := os.Args[2:]
 
-    {{if .SrcInit}}
+	{{if .SrcIdx ne -1}}
 	switch len(args) {
 	case expectedCLIArgs - 1:
 		src = stdinToSrc()
@@ -28,16 +28,19 @@ func main() {
 	default:
 		log.Fatalf("Expected %d or %d arguments, but got %d args.\n\n", expectedCLIArgs-1, expectedCLIArgs, len(args))
 	}
-    {{end}}
-    {{range .ArgInits}}
-    {{.}}
-    {{end}}
-    {{.DstInit}}
+	{{end}}
+	{{range .ArgInits}}
+	{{.}}
+	{{end}}
+	{{.DstInit}}
 
-   	val := md5.Sum(data)
-	if _, err := fmt.Fprintf(os.Stdout, "%x\n", val); err != nil {
-		log.Fatal(err)
-	}
+	{{.Results}}{{.PkgName}}.{{.Func}}({{.Args}})
+	{{.ErrCheck}}
+	{{if .DstIdx ne -1}}
+	{{.DstToStdout}}
+	{{else}}
+	{{.PrintVal}}
+	{{end}}
 }
 {{.ArgsToSrc}}
 {{.StdinToSrc}}

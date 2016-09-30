@@ -10,7 +10,6 @@ import (
 	"path"
 	"sort"
 	"strings"
-	"text/template"
 
 	"golang.org/x/tools/go/loader"
 
@@ -132,37 +131,31 @@ func gen(cmd Command, data templateData) (path string, err error) {
 }
 
 type templateData struct {
-	NumResults   int
-	NumParams    int
-	NumCLIParams int
+	Results      string
+	Args         string
 	PkgName      string
 	Func         string
 	SrcIdx       int
 	DstIdx       int
-	HasError     bool
+	ErrCheck     string
 	HasLen       bool
-	SrcInit string
+	SrcInit      string
 	ArgsToSrc    string
 	StdinToSrc   string
 	DstInit      string
 	DstToStdout  string
+	PrintVal     string
 	ParamTypes   map[types.Type]struct{}
 	Imports      map[string]struct{}
 	ArgConvFuncs []string
-	ArgInits []string
+	ArgInits     []string
 }
 
 func compileData(cmd Command, sig *types.Signature) (templateData, error) {
-	if err := validateResults(sig.Results()); err != nil {
-		return templateData{}, err
-	}
 	data := templateData{
-		NumResults: sig.Results().Len(),
-		NumParams:  sig.Params().Len(),
 		PkgName:    path.Base(cmd.Package),
 		Func:       cmd.Function,
-		HasError:   hasError(sig),
-		HasLen:     hasLen(sig),
+		HasLen:     hasLen(sig.Results()),
 		SrcIdx:     -1,
 		DstIdx:     -1,
 		ParamTypes: map[types.Type]struct{}{},
@@ -170,6 +163,9 @@ func compileData(cmd Command, sig *types.Signature) (templateData, error) {
 			cmd.Package: struct{}{},
 			"log":       struct{}{},
 		},
+	}
+	if err := data.parseResults(sig.Results()); err != nil {
+		return templateData{}, err
 	}
 	if src, dst, ok := checkSrcDst(sig.Params()); ok {
 		if err := data.setSrcDst(src, dst, sig.Params()); err != nil {
@@ -222,37 +218,34 @@ func (data *templateData) ImportStatements() string {
 
 func (data *templateData) parseParams(params *types.Tuple) error {
 	pos := 1
+	var args []string
 	for x := 0; x < params.Len(); x++ {
-		if x == data.SrcIdx || x == data.DstIdx {
-			// we convert these elsewhere.
+		if x == data.SrcIdx {
+			args = append(args, "src")
+			continue
+		}
+		if x == data.DstIdx {
+			args = append(args, "dst")
 			continue
 		}
 		p := params.At(x)
 		t := p.Type()
-		conv, ok := argConverters[t] 
+		conv, ok := argConverters[t]
 		if !ok {
 			return fmt.Errorf("don't understand how to convert arg %q from CLI", p.Name())
 		}
+		args = append(args, fmt.Sprintf("arg%d", pos))
 		data.ParamTypes[t] = struct{}{}
-		data.ArgInits = append(data.ArgInits, fmt.Sprinf(conv.Assign, pos))
+		data.ArgInits = append(data.ArgInits, fmt.Sprintf(conv.Assign, pos))
 		pos++
 	}
+	data.Args = strings.Join(args, ", ")
 	for t := range data.ParamTypes {
 		data.ArgConvFuncs = append(data.ArgConvFuncs, argConverters[t].Func)
 		for _, imp := range argConverters[t].Imports {
 			data.Imports[imp] = struct{}{}
 		}
 	}
-	data.NumCLIArgs = params.Len()
-	if data.DstIdx != -1 {
-		data.NumCLIArgs--
-	}
-
-	data.NumNonSrcCLIArgs = data.NumCLIArgs
-	if data.SrcIdx != -1 {
-		data.NumNonSrcCLIArgs--
-	}
-	
 
 	// sort so we have consistent output.
 	sort.Strings(data.ArgConvFuncs)
@@ -281,25 +274,69 @@ func checkSrcDst(params *types.Tuple) (dst, src int, ok bool) {
 }
 
 func isDstType(t types.Type) bool {
-	_, ok := dstHandlers[t]
+	_, ok := dstHandlers[t.Underlying()]
 	return ok
 }
 
 func isSrcType(t types.Type) bool {
-	_, ok := srcHandlers[t]
+	_, ok := srcHandlers[t.Underlying()]
+	fmt.Println("src?", ok)
 	return ok
 }
 
-// validateResults ensures that the return value on the signature is one that we
-// can support.
-func validateResults(results *types.Tuple) error {
+const justPrintIt = `
+	if _, err := fmt.Fprintf(os.Stdout, "%v\n", val); err != nil {
+		log.Fatal(err)
+	}
+`
+
+// arrayOutput is the text we dump instead of using %v to print out return
+// values.  Most functions that return an array of bytes intend for them to
+// be printed out with %x, so that you get a hex string, instead of a bunch
+// of byte values.
+const arrayOutput = `
+if _, err := fmt.Fprintf(os.Stdout, "%x\n", val); err != nil {
+		log.Fatal(err)
+	}
+`
+
+// yay go!  (no, really, I actually do like go's error handling)
+const errCheck = `
+	if err != nil {
+		log.Fatal(err)
+	}
+`
+
+// parseResults ensures that the return value on the signature is one that we
+// can support, and creates the data to output in the template data.
+func (data *templateData) parseResults(results *types.Tuple) error {
 	switch results.Len() {
-	case 0, 1:
-		// always fine.
+	case 0:
+		return nil
+	case 1:
+		if types.Identical(results.At(0).Type().Underlying(), errorType) {
+			data.Results = "err := "
+			data.ErrCheck = errCheck
+			return nil
+		}
+		if hasLen(results) {
+			data.Results = "_ = "
+			return nil
+		}
+		data.Results = "val := "
+		data.PrintVal = justPrintIt
 		return nil
 	case 2:
 		// val, err is ok.
-		if types.Identical(results.At(1).Type(), errorType) {
+		if types.Identical(results.At(1).Type().Underlying(), errorType) {
+			if hasLen(results) {
+				data.Results = "_, err := "
+				data.ErrCheck = errCheck
+				return nil
+			}
+			data.Results = "val, err := "
+			data.ErrCheck = errCheck
+			data.PrintVal = justPrintIt
 			return nil
 		}
 		return errors.New("can't understand function with multiple non-error return values")
@@ -315,7 +352,7 @@ func validateResults(results *types.Tuple) error {
 func hasError(sig *types.Signature) bool {
 	if len := sig.Results().Len(); len > 0 {
 		// We only care about the last value.
-		return types.Identical(sig.Results().At(len-1).Type(), errorType)
+		return types.Identical(sig.Results().At(len-1).Type().Underlying(), errorType)
 	}
 	return false
 }
@@ -323,40 +360,40 @@ func hasError(sig *types.Signature) bool {
 // hasLen determines if the function returns a value indicating a number of
 // bytes written.  This is a common go idiom, and is usually the first value
 // returned, with a variable name called n of type int.
-func hasLen(sig *types.Signature) bool {
-	if sig.Results().Len() > 0 {
+func hasLen(results *types.Tuple) bool {
+	if results.Len() > 0 {
 		// We only care about the last value.
-		val := sig.Results().At(0)
-		return val.Name() == "n" && types.Identical(val.Type(), types.Typ[types.Int])
+		val := results.At(0)
+		return val.Name() == "n" && types.Identical(val.Type().Underlying(), types.Typ[types.Int])
 	}
 	return false
 }
 
-// Our simplest case - no args, one return, like time.Now().
-var zeroOne = template.Must(template.New("").Parse(`
-package main
+// // Our simplest case - no args, one return, like time.Now().
+// var zeroOne = template.Must(template.New("").Parse(`
+// package main
 
-import (
-	"fmt"
-	"log"
-	"os"
-	{{ if not (eq .Import "log" "fmt" "os") }}
-	"{{.Import}}"
-	{{- end -}}
-)
+// import (
+// 	"fmt"
+// 	"log"
+// 	"os"
+// 	{{ if not (eq .Import "log" "fmt" "os") }}
+// 	"{{.Import}}"
+// 	{{- end -}}
+// )
 
-func main() {
-	log.SetFlags(0)
-	if len(os.Args) > 1 {
-		log.Fatalf("Expected no arguments, but got %d args.\n\n", len(os.Args)-1)
-	}
-	{{if .Params.Len eq }}
-	val := {{.Package}}.{{.Func}}()
-	if _, err := fmt.Fprintln(os.Stdout, val); err != nil {
-		log.Fatal(err)
-	}
-}
-`))
+// func main() {
+// 	log.SetFlags(0)
+// 	if len(os.Args) > 1 {
+// 		log.Fatalf("Expected no arguments, but got %d args.\n\n", len(os.Args)-1)
+// 	}
+// 	{{if .Params.Len eq }}
+// 	val := {{.Package}}.{{.Func}}()
+// 	if _, err := fmt.Fprintln(os.Stdout, val); err != nil {
+// 		log.Fatal(err)
+// 	}
+// }
+// `))
 
 type srcHandler struct {
 	// Imports holds the packages needed for the functions this handler uses.
@@ -402,7 +439,7 @@ func stdinToSrc() []byte {
 
 	ioReaderType: srcHandler{
 		Imports: []string{"io", "os"},
-		Init : "var src io.Reader"
+		Init:    "var src io.Reader",
 		ArgToSrc: `
 func argsToSrc(args []string) (io.Reader, []string) {
 	srcIdx := %d
@@ -452,24 +489,6 @@ var dstHandlers = map[types.Type]dstHandler{
 		// no ToStdout needed, since dst *is* stdout.
 	},
 }
-
-const (
-	// arrayOutput is the text we dump instead of using %v to print out return
-	// values.  Most functions that return an array of bytes intend for them to
-	// be printed out with %x, so that you get a hex string, instead of a bunch
-	// of byte values.
-	arrayOutput = `
-	if _, err := fmt.Fprintf(os.Stdout, "%x\n", val); err != nil {
-		log.Fatal(err)
-	}
-`
-	// yay go!  (no, really, I actually do like go's error handling)
-	errCheck = `
-	if err != nil {
-		log.Fatal(err)
-	}
-`
-)
 
 // converter is a type that holds information about argument conversions from
 // CLI strings to function arguments of various types.  If a function takes an
