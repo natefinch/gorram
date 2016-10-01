@@ -131,26 +131,25 @@ func gen(cmd Command, data templateData) (path string, err error) {
 }
 
 type templateData struct {
-	Results          string
-	Args             string
-	NumCLIArgs       int
-	PkgName          string
-	Func             string
-	SrcIdx           int
-	DstIdx           int
-	ErrCheck         string
-	HasLen           bool
-	SrcInit          string
-	ArgsToSrc        string
-	StdinToSrc       string
-	DstInit          string
-	DstToStdout      string
-	PrintVal         string
-	ParamTypes       map[types.Type]struct{}
-	Imports          map[string]struct{}
-	ArgConvFuncs     []string
-	ArgInits         []string
-	ImportStatements string
+	Results      string
+	Args         string
+	NumCLIArgs   int
+	PkgName      string
+	Func         string
+	SrcIdx       int
+	DstIdx       int
+	ErrCheck     string
+	HasLen       bool
+	SrcInit      string
+	ArgsToSrc    string
+	StdinToSrc   string
+	DstInit      string
+	DstToStdout  string
+	PrintVal     string
+	ParamTypes   map[types.Type]struct{}
+	Imports      map[string]struct{}
+	ArgConvFuncs []string
+	ArgInits     []string
 }
 
 func compileData(cmd Command, sig *types.Signature) (templateData, error) {
@@ -182,7 +181,6 @@ func compileData(cmd Command, sig *types.Signature) (templateData, error) {
 	if data.DstIdx != -1 {
 		data.NumCLIArgs--
 	}
-	data.ImportStatements = data.importStatements()
 	return data, nil
 }
 
@@ -212,15 +210,6 @@ func (data *templateData) setSrcDst(src, dst int, params *types.Tuple) error {
 		data.Imports[imp] = struct{}{}
 	}
 	return nil
-}
-
-func (data *templateData) importStatements() string {
-	imports := make([]string, 0, len(data.Imports))
-	for imp := range data.Imports {
-		imports = append(imports, `"`+imp+`"`)
-	}
-	sort.Strings(imports)
-	return "\t" + strings.Join(imports, "\n\t")
 }
 
 func (data *templateData) parseParams(params *types.Tuple) error {
@@ -268,7 +257,7 @@ func checkSrcDst(params *types.Tuple) (dst, src int, ok bool) {
 			if isDstType(p.Type()) {
 				dst = x
 			}
-		case "src":
+		default:
 			if isSrcType(p.Type()) {
 				src = x
 			}
@@ -287,7 +276,6 @@ func isDstType(t types.Type) bool {
 
 func isSrcType(t types.Type) bool {
 	_, ok := srcHandlers[t.Underlying()]
-	fmt.Println("src?", ok)
 	return ok
 }
 

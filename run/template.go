@@ -6,7 +6,9 @@ var templ = template.Must(template.New("").Parse(`
 package main
 
 import (
-{{.ImportStatements}}
+{{range $import, $ignored := .Imports}}
+	"{{$import}}"
+{{end}}
 )
 
 func main() {
@@ -14,10 +16,11 @@ func main() {
 
 	{{.SrcInit}}
 
+	{{if gt .NumCLIArgs 0}}
 	// strip off the executable name and the -- that we put in so that go run
 	// won't treat arguments to the script as files to run.
 	args := os.Args[2:]
-
+	{{end}}
 	{{if ne .SrcIdx -1}}
 	expectedCLIArgs := {{.NumCLIArgs}}
 	switch len(args) {
