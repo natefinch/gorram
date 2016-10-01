@@ -27,7 +27,7 @@ func main() {
 	case expectedCLIArgs - 1:
 		src = stdinToSrc()
 	case expectedCLIArgs:
-		src, args = argToSrc(args)
+		src, args = argsToSrc(args)
 	default:
 		log.Fatalf("Expected %d or %d arguments, but got %d args.\n\n", expectedCLIArgs-1, expectedCLIArgs, len(args))
 	}
@@ -47,7 +47,6 @@ func main() {
 }
 {{.ArgsToSrc}}
 {{.StdinToSrc}}
-{{.DstToStdout}}
 {{range .ArgConvFuncs}}
 {{.}}
 {{end}}

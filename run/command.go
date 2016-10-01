@@ -3,7 +3,6 @@ package run
 import (
 	"errors"
 	"fmt"
-	"go/parser"
 	"go/types"
 	"log"
 	"os/exec"
@@ -16,28 +15,24 @@ import (
 	"npf.io/deputy"
 )
 
-func init() {
-	conf := loader.Config{
-		ImportPkgs: map[string]bool{
-			"bytes": false,
-			"io":    false,
-		},
-	}
-	prog, err := conf.Load()
-	if err != nil {
-		panic(err)
-	}
-	bytesBufferType = prog.Package("bytes").Pkg.Scope().Lookup("Buffer").Type()
-	ptrBytesBufferType = types.NewPointer(bytesBufferType)
+func initTypes(prog *loader.Program) {
+	buf := prog.Package("bytes").Pkg.Scope().Lookup("Buffer").Type()
+	ptrBytesBufferType = types.NewPointer(buf)
+
 	errorType = types.Universe.Lookup("error").Type()
 	ioReaderType = prog.Package("io").Pkg.Scope().Lookup("Reader").Type()
 	ioWriterType = prog.Package("io").Pkg.Scope().Lookup("Writer").Type()
 	ioReader = ioReaderType.Underlying().(*types.Interface)
 	ioWriter = ioWriterType.Underlying().(*types.Interface)
+
+	// we do these here so they are definitely performed after we initialize
+	// some of the types they depend on.
+	setDstHandlers()
+	setSrcHandlers()
+	setArgConverters()
 }
 
 // Used for type comparison.
-var bytesBufferType types.Type
 var ptrBytesBufferType types.Type
 var errorType types.Type
 var ioReaderType types.Type
@@ -82,12 +77,19 @@ func run(path string, args []string) error {
 // Generate creates the gorram .go file for the given command.
 func Generate(cmd Command) (path string, err error) {
 	// let's see if this is even a valid package
-	conf := loader.Config{ParserMode: parser.ParseComments}
-	conf.Import(cmd.Package)
+	imports := map[string]bool{
+		"io":    false,
+		"bytes": false,
+	}
+	imports[cmd.Package] = false
+	conf := loader.Config{
+		ImportPkgs: imports,
+	}
 	lprog, err := conf.Load()
 	if err != nil {
 		log.Fatal(err)
 	}
+	initTypes(lprog)
 
 	// Find the package and package-level object.
 	pkg := lprog.Package(cmd.Package).Pkg
@@ -169,8 +171,8 @@ func compileData(cmd Command, sig *types.Signature) (templateData, error) {
 	if err := data.parseResults(sig.Results()); err != nil {
 		return templateData{}, err
 	}
-	if src, dst, ok := checkSrcDst(sig.Params()); ok {
-		if err := data.setSrcDst(src, dst, sig.Params()); err != nil {
+	if dst, src, ok := checkSrcDst(sig.Params()); ok {
+		if err := data.setSrcDst(dst, src, sig.Params()); err != nil {
 			return templateData{}, err
 		}
 	}
@@ -184,11 +186,11 @@ func compileData(cmd Command, sig *types.Signature) (templateData, error) {
 	return data, nil
 }
 
-func (data *templateData) setSrcDst(src, dst int, params *types.Tuple) error {
+func (data *templateData) setSrcDst(dst, src int, params *types.Tuple) error {
 	data.SrcIdx = src
 	data.DstIdx = dst
 	srcType := params.At(src).Type()
-	srcH, ok := srcHandlers[srcType]
+	srcH, ok := getSrcHandler(srcType)
 	if !ok {
 		return fmt.Errorf("should be impossible: src type %q has no handler", srcType)
 	}
@@ -200,7 +202,7 @@ func (data *templateData) setSrcDst(src, dst int, params *types.Tuple) error {
 	data.SrcInit = srcH.Init
 
 	dstType := params.At(dst).Type()
-	dstH, ok := dstHandlers[dstType]
+	dstH, ok := getDstHandler(dstType)
 	if !ok {
 		return fmt.Errorf("should be impossible: dst type %q has no handler", dstType)
 	}
@@ -213,7 +215,7 @@ func (data *templateData) setSrcDst(src, dst int, params *types.Tuple) error {
 }
 
 func (data *templateData) parseParams(params *types.Tuple) error {
-	pos := 1
+	pos := 0
 	var args []string
 	for x := 0; x < params.Len(); x++ {
 		if x == data.SrcIdx {
@@ -226,19 +228,20 @@ func (data *templateData) parseParams(params *types.Tuple) error {
 		}
 		p := params.At(x)
 		t := p.Type()
-		conv, ok := argConverters[t]
+		conv, ok := getArgConverter(t)
 		if !ok {
 			return fmt.Errorf("don't understand how to convert arg %q from CLI", p.Name())
 		}
-		args = append(args, fmt.Sprintf("arg%d", pos))
+		args = append(args, fmt.Sprintf("arg%d", pos+1))
 		data.ParamTypes[t] = struct{}{}
-		data.ArgInits = append(data.ArgInits, fmt.Sprintf(conv.Assign, pos, x))
+		data.ArgInits = append(data.ArgInits, fmt.Sprintf(conv.Assign, pos+1, pos))
 		pos++
 	}
 	data.Args = strings.Join(args, ", ")
 	for t := range data.ParamTypes {
-		data.ArgConvFuncs = append(data.ArgConvFuncs, argConverters[t].Func)
-		for _, imp := range argConverters[t].Imports {
+		converter, _ := getArgConverter(t)
+		data.ArgConvFuncs = append(data.ArgConvFuncs, converter.Func)
+		for _, imp := range converter.Imports {
 			data.Imports[imp] = struct{}{}
 		}
 	}
@@ -270,12 +273,12 @@ func checkSrcDst(params *types.Tuple) (dst, src int, ok bool) {
 }
 
 func isDstType(t types.Type) bool {
-	_, ok := dstHandlers[t.Underlying()]
+	_, ok := getDstHandler(t)
 	return ok
 }
 
 func isSrcType(t types.Type) bool {
-	_, ok := srcHandlers[t.Underlying()]
+	_, ok := getSrcHandler(t)
 	return ok
 }
 
@@ -309,7 +312,7 @@ func (data *templateData) parseResults(results *types.Tuple) error {
 	case 0:
 		return nil
 	case 1:
-		if types.Identical(results.At(0).Type().Underlying(), errorType) {
+		if types.Identical(results.At(0).Type(), errorType) {
 			data.Results = "err := "
 			data.ErrCheck = errCheck
 			data.Imports["log"] = struct{}{}
@@ -326,7 +329,7 @@ func (data *templateData) parseResults(results *types.Tuple) error {
 		return nil
 	case 2:
 		// val, err is ok.
-		if types.Identical(results.At(1).Type().Underlying(), errorType) {
+		if types.Identical(results.At(1).Type(), errorType) {
 			if hasLen(results) {
 				data.Results = "_, err := "
 				data.ErrCheck = errCheck
@@ -397,6 +400,8 @@ func hasLen(results *types.Tuple) bool {
 // `))
 
 type srcHandler struct {
+	// Type is the type, duh.
+	Type types.Type
 	// Imports holds the packages needed for the functions this handler uses.
 	Imports []string
 	// Init holds the line that initializes the src variable.
@@ -412,36 +417,50 @@ type srcHandler struct {
 	StdinToSrc string
 }
 
-var srcHandlers = map[types.Type]srcHandler{
-	byteSliceType: srcHandler{
-		Imports: []string{"io/ioutil", "log"},
-		Init:    "var src []byte",
-		ArgToSrc: `
+var srcHandlers []srcHandler
+
+// have to do it this way since some types won't work in maps.
+func getSrcHandler(t types.Type) (srcHandler, bool) {
+	for _, h := range srcHandlers {
+		if types.Identical(t, h.Type) {
+			return h, true
+		}
+	}
+	return srcHandler{}, false
+}
+
+func setSrcHandlers() {
+	srcHandlers = []srcHandler{
+		{
+			Type:    byteSliceType,
+			Imports: []string{"io/ioutil", "log"},
+			Init:    "var src []byte",
+			ArgToSrc: `
 func argsToSrc(args []string) ([]byte, []string) {
 	srcIdx := %d
-	src, err = ioutil.ReadFile(args[srcIdx])
+	src, err := ioutil.ReadFile(args[srcIdx])
 	if err != nil {
 		log.Fatal(err)
 	}
 	// Take out the src arg.
-	args = append(args[:srcIdx], args[srcIdx+1]...)
+	args = append(args[:srcIdx], args[srcIdx+1:]...)
 	return src, args
 }
 `,
-		StdinToSrc: `
+			StdinToSrc: `
 func stdinToSrc() []byte {
-	src, err = ioutil.ReadAll(os.Stdin)
+	src, err := ioutil.ReadAll(os.Stdin)
 	if err != nil {
 		log.Fatal(err)
 	}
 	return src
 }
 `},
-
-	ioReaderType: srcHandler{
-		Imports: []string{"io", "os"},
-		Init:    "var src io.Reader",
-		ArgToSrc: `
+		{
+			Type:    ioReaderType,
+			Imports: []string{"io", "os"},
+			Init:    "var src io.Reader",
+			ArgToSrc: `
 func argsToSrc(args []string) (io.Reader, []string) {
 	srcIdx := %d
 	// yes, I know I never close this. It gets closed when the process exits.
@@ -455,15 +474,18 @@ func argsToSrc(args []string) (io.Reader, []string) {
 	return src, args
 }
 `,
-		StdinToSrc: `
+			StdinToSrc: `
 func stdinToSrc() io.Reader {
 	return os.Stdin
 }
 `},
+	}
 }
 
 // dstHandler contains the code to handle destination arguments in a function.
 type dstHandler struct {
+	// Type is the types.Type this handler handles.
+	Type types.Type
 	// Imports holds the packages needed for the functions this handler uses.
 	Imports []string
 	// Init contains the initialization line necessary for creating a variable
@@ -475,20 +497,35 @@ type dstHandler struct {
 	ToStdout string
 }
 
-var dstHandlers = map[types.Type]dstHandler{
-	ptrBytesBufferType: dstHandler{
-		Imports: []string{"bytes"},
-		Init:    "dst := &bytes.Buffer{}",
-		ToStdout: `
+var dstHandlers []dstHandler
+
+func getDstHandler(t types.Type) (dstHandler, bool) {
+	for _, h := range dstHandlers {
+		if types.Identical(t, h.Type) {
+			return h, true
+		}
+	}
+	return dstHandler{}, false
+}
+
+func setDstHandlers() {
+	dstHandlers = []dstHandler{
+		{
+			Type:    ptrBytesBufferType,
+			Imports: []string{"bytes", "io"},
+			Init:    "dst := &bytes.Buffer{}",
+			ToStdout: `
 	if _, err := io.Copy(os.Stdout, dst); err != nil {
 		log.Fatal(err)
 	}
 `},
-	ioWriterType: dstHandler{
-		Imports: []string{"os"},
-		Init:    "dst := os.Stdout",
-		// no ToStdout needed, since dst *is* stdout.
-	},
+		{
+			Type:    ioWriterType,
+			Imports: []string{"os"},
+			Init:    "dst := os.Stdout",
+			// no ToStdout needed, since dst *is* stdout.
+		},
+	}
 }
 
 // converter is a type that holds information about argument conversions from
@@ -496,6 +533,8 @@ var dstHandlers = map[types.Type]dstHandler{
 // argument that is not declared here, and is not a destination or source
 // argument, we can't handle it.
 type converter struct {
+	// Type is the types.Type this converter converts.
+	Type types.Type
 	// Assign is a format string that is used to make the conversion between CLI
 	// arg x and function arg y in the body of the main function.  It should
 	// take the cli arg index and the function arg index as %d format values.
@@ -515,15 +554,31 @@ type converter struct {
 
 // argConverters is a map of types to helper functions that we dump at the
 // end of the file to make the rest of the file easier to construct and read.  The values
-var argConverters = map[types.Type]converter{
-	// string is a special flower because it doesn't need a converter, but we
-	// keep an empty converter here so that we don't need to special case it
-	// elsewhere.
-	types.Typ[types.String]: converter{Assign: "arg%d = args[%d]"},
-	types.Typ[types.Int]: converter{
-		Assign:  "arg%d := argToInt(args[%d])",
-		Imports: []string{"strconv", "log"},
-		Func: `
+var argConverters []converter
+
+func getArgConverter(t types.Type) (converter, bool) {
+	for _, c := range argConverters {
+		if types.Identical(t, c.Type) {
+			return c, true
+		}
+	}
+	return converter{}, false
+}
+
+func setArgConverters() {
+	argConverters = []converter{
+		{
+			// string is a special flower because it doesn't need a converter, but we
+			// keep an empty converter here so that we don't need to special case it
+			// elsewhere.
+			Type:   types.Typ[types.String],
+			Assign: "arg%d := args[%d]",
+		},
+		{
+			Type:    types.Typ[types.Int],
+			Assign:  "arg%d := argToInt(args[%d])",
+			Imports: []string{"strconv", "log"},
+			Func: `
 func argToInt(s string) int {
 	i, err := strconv.ParseInt(s, 0, 0)
 	if err != nil {
@@ -532,10 +587,11 @@ func argToInt(s string) int {
 	return int(i)
 }
 `},
-	types.Typ[types.Uint]: converter{
-		Assign:  "arg%d := argToUint(args[%d])",
-		Imports: []string{"strconv", "log"},
-		Func: `
+		{
+			Type:    types.Typ[types.Uint],
+			Assign:  "arg%d := argToUint(args[%d])",
+			Imports: []string{"strconv", "log"},
+			Func: `
 func argToUint(s string) int {
 	u, err := strconv.ParseUint(s, 0, 0)
 	if err != nil {
@@ -544,10 +600,11 @@ func argToUint(s string) int {
 	return uint(u)
 }
 `},
-	types.Typ[types.Float64]: converter{
-		Assign:  "arg%d := argToFloat64(args[%d])",
-		Imports: []string{"strconv", "log"},
-		Func: `
+		{
+			Type:    types.Typ[types.Float64],
+			Assign:  "arg%d := argToFloat64(args[%d])",
+			Imports: []string{"strconv", "log"},
+			Func: `
 func argToFloat64(s string) float64 {
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
@@ -556,10 +613,11 @@ func argToFloat64(s string) float64 {
 	return f
 }
 `},
-	types.Typ[types.Bool]: converter{
-		Assign:  "arg%d := argToBool(args[%d])",
-		Imports: []string{"strconv", "log"},
-		Func: `
+		{
+			Type:    types.Typ[types.Bool],
+			Assign:  "arg%d := argToBool(args[%d])",
+			Imports: []string{"strconv", "log"},
+			Func: `
 func argToBool(s string) bool {
 	b, err := strconv.ParseBool(s)
 	if err != nil {
@@ -568,10 +626,11 @@ func argToBool(s string) bool {
 	return b
 }
 `},
-	types.Typ[types.Int64]: converter{
-		Assign:  "arg%d := argToInt64(args[%d])",
-		Imports: []string{"strconv", "log"},
-		Func: `
+		{
+			Type:    types.Typ[types.Int64],
+			Assign:  "arg%d := argToInt64(args[%d])",
+			Imports: []string{"strconv", "log"},
+			Func: `
 func argToInt64(s string) int64 {
 	i, err := strconv.ParseInt(s, 0, 64)
 	if err != nil {
@@ -580,10 +639,11 @@ func argToInt64(s string) int64 {
 	return i
 }
 `},
-	types.Typ[types.Uint64]: converter{
-		Assign:  "arg%d := argToUint64(args[%d])",
-		Imports: []string{"strconv", "log"},
-		Func: `
+		{
+			Type:    types.Typ[types.Uint64],
+			Assign:  "arg%d := argToUint64(args[%d])",
+			Imports: []string{"strconv", "log"},
+			Func: `
 func argToUint(s string) uint64 {
 	u, err := strconv.ParseUint(s, 0, 64)
 	if err != nil {
@@ -592,4 +652,5 @@ func argToUint(s string) uint64 {
 	return u
 }
 `},
+	}
 }
