@@ -178,6 +178,8 @@ func compileData(cmd Command, sig *types.Signature) (templateData, error) {
 		if err := data.setSrcDst(dst, src, sig.Params()); err != nil {
 			return templateData{}, err
 		}
+	} else {
+
 	}
 	if err := data.parseParams(sig.Params()); err != nil {
 		return templateData{}, err
@@ -197,13 +199,25 @@ func (data *templateData) setSrcDst(dst, src int, params *types.Tuple) error {
 	if !ok {
 		return fmt.Errorf("should be impossible: src type %q has no handler", srcType)
 	}
-	data.ArgsToSrc = fmt.Sprintf(srcH.ArgToSrc, src)
+
+	// if src position is, as per usual, after dst, e.g. func f(dst, src []byte)
+	// then the cli arg position will actually be one less than that, since we
+	// don't pass in the dst arg from the CLI. e.g. in the above, dst is 0, src
+	// is 1, but for the cli args, src would be arg 0.
+	srcArg := src
+	if dst != -1 && src > dst {
+		srcArg--
+	}
+	data.ArgsToSrc = fmt.Sprintf(srcH.ArgToSrc, srcArg)
 	data.StdinToSrc = srcH.StdinToSrc
 	for _, imp := range srcH.Imports {
 		data.Imports[imp] = struct{}{}
 	}
 	data.SrcInit = srcH.Init
 
+	if dst == -1 {
+		return nil
+	}
 	dstType := params.At(dst).Type()
 	dstH, ok := getDstHandler(dstType)
 	if !ok {
@@ -264,12 +278,12 @@ func checkSrcDst(params *types.Tuple) (dst, src int, ok bool) {
 				dst = x
 			}
 		default:
-			if isSrcType(p.Type()) {
+			if src == -1 && isSrcType(p.Type()) {
 				src = x
 			}
 		}
 	}
-	if src != -1 && dst != -1 {
+	if src != -1 {
 		return dst, src, true
 	}
 	return -1, -1, false
