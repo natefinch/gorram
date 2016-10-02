@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/types"
 	"log"
+	"os"
 	"os/exec"
 	"path"
 	"sort"
@@ -71,7 +72,9 @@ func run(path string, args []string) error {
 	// put a -- between the filename and the args so we don't confuse go run
 	// into thinking the first arg is another file to run.
 	realArgs := append([]string{"run", path, "--"}, args...)
-	return d.Run(exec.Command("go", realArgs...))
+	cmd := exec.Command("go", realArgs...)
+	cmd.Stdin = os.Stdin
+	return d.Run(cmd)
 }
 
 // Generate creates the gorram .go file for the given command.
