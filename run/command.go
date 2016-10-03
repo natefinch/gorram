@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"go/types"
-	"log"
 	"os"
 	"os/exec"
 	"path"
@@ -12,8 +11,6 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/loader"
-
-	"npf.io/deputy"
 )
 
 func initTypes(prog *loader.Program) {
@@ -104,7 +101,7 @@ func Generate(cmd Command) (path string, err error) {
 	}
 	lprog, err := conf.Load()
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
 	initTypes(lprog)
 
@@ -131,15 +128,12 @@ func Generate(cmd Command) (path string, err error) {
 }
 
 func goFmt(path string) error {
-	d := deputy.Deputy{
-		Errors:    deputy.FromStderr,
-		StdoutLog: func(b []byte) { log.Print(string(b)) },
-	}
 	// put a -- between the filename and the args so we don't confuse go run
 	// into thinking the first arg is another file to run.
 	cmd := exec.Command("gofmt", "-s", "-w", path)
-	cmd.Stdin = os.Stdin
-	return d.Run(cmd)
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = os.Stdout
+	return cmd.Run()
 }
 
 func getFunc(cmd Command, pkg *types.Package) (*types.Func, error) {

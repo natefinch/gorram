@@ -14,6 +14,9 @@ Automagically understands how to produce an interface from the command line into
 go get npf.io/gorram
 ```
 
+Note: gorram depends on having a working go environment to function, since it
+dynamically analyzes go code in the stdlib and in your GOPATH.
+
 ## Examples
 
 Pretty print JSON:
@@ -118,3 +121,7 @@ func (e *Encoding) EncodeToString(b []byte]) string
 Gorram understands that packages have global variables that have methods you can
 call.
 
+## Development
+
+See the [project page](https://github.com/natefinch/gorram/projects/1) for what's
+being worked on now. 
