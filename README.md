@@ -1,4 +1,4 @@
-# gorram <sup><sub>(WIP)</sub></sup>
+# gorram
 
 ![river](https://cloud.githubusercontent.com/assets/3185864/18798443/97829e60-81a0-11e6-99a2-d8a788dd9279.jpg)
 
@@ -7,6 +7,12 @@
 It's like go run for any go function.
 
 Automagically understands how to produce an interface from the command line into a Go function.
+
+## Installation
+
+```
+go get npf.io/gorram
+```
 
 ## Examples
 
@@ -111,3 +117,4 @@ func (e *Encoding) EncodeToString(b []byte]) string
 ```
 Gorram understands that packages have global variables that have methods you can
 call.
+
