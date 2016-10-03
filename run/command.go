@@ -299,21 +299,48 @@ func isSrcType(t types.Type) bool {
 	return ok
 }
 
-const justPrintIt = `
+func isByteArray(t types.Type) bool {
+	arr, ok := t.(*types.Array)
+	if !ok {
+		return false
+	}
+	return types.Identical(arr.Elem(), types.Typ[types.Byte])
+}
+
+type retHandler struct {
+	Filter  func(types.Type) bool
+	Imports []string
+	Code    string
+}
+
+var defaultRetHandler = retHandler{
+	Imports: []string{"os", "fmt", "log"},
+	Code: `
 	if _, err := fmt.Fprintf(os.Stdout, "%v\n", val); err != nil {
 		log.Fatal(err)
 	}
-`
+`}
 
-// arrayOutput is the text we dump instead of using %v to print out return
-// values.  Most functions that return an array of bytes intend for them to
-// be printed out with %x, so that you get a hex string, instead of a bunch
-// of byte values.
-const arrayOutput = `
+func getRetHandler(t types.Type) retHandler {
+	for _, h := range retHandlers {
+		if h.Filter(t) {
+			return h
+		}
+	}
+	return defaultRetHandler
+}
+
+var retHandlers = []retHandler{
+	{
+		Filter:  isByteArray,
+		Imports: []string{"fmt", "os", "log"},
+		Code: `
 if _, err := fmt.Fprintf(os.Stdout, "%x\n", val); err != nil {
 		log.Fatal(err)
 	}
-`
+`,
+	},
+}
 
 // yay go!  (no, really, I actually do like go's error handling)
 const errCheck = `
@@ -340,9 +367,7 @@ func (data *templateData) parseResults(results *types.Tuple) error {
 			return nil
 		}
 		data.Results = "val := "
-		data.PrintVal = justPrintIt
-		data.Imports["os"] = struct{}{}
-		data.Imports["fmt"] = struct{}{}
+		data.setReturnType(results.At(0).Type())
 		return nil
 	case 2:
 		// val, err is ok.
@@ -355,14 +380,20 @@ func (data *templateData) parseResults(results *types.Tuple) error {
 			}
 			data.Results = "val, err := "
 			data.ErrCheck = errCheck
-			data.PrintVal = justPrintIt
-			data.Imports["os"] = struct{}{}
-			data.Imports["fmt"] = struct{}{}
+			data.setReturnType(results.At(0).Type())
 			return nil
 		}
 		return errors.New("can't understand function with multiple non-error return values")
 	default:
 		return errors.New("can't understand functions with more than two return values")
+	}
+}
+
+func (data *templateData) setReturnType(t types.Type) {
+	h := getRetHandler(t)
+	data.PrintVal = h.Code
+	for _, imp := range h.Imports {
+		data.Imports[imp] = struct{}{}
 	}
 }
 
