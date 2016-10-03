@@ -49,9 +49,19 @@ var ioWriter *types.Interface
 // represents a package and either global function or a method call on a global
 // variable.  If GlobalVar is non-empty, it's the latter.
 type Command struct {
-	Package   string
-	Function  string
+	// Package the function exists in.
+	Package string
+	// Function (or method) to call.
+	Function string
+	// GlobalVar, if not empty, indicates a global variable to call, and means
+	// Function is a method on that variable.
 	GlobalVar string
+	// Regen, if true, indicates we should create a new script file even if the
+	// old one exists.
+	Regen bool
+	// Cache, if non-empty, indicates the user has specified the non-default
+	// location for their gorram scripts to be located.
+	Cache string
 }
 
 // Run generates the gorram .go file if it doesn't already exist and then runs
@@ -65,20 +75,24 @@ func Run(cmd Command, args []string) error {
 }
 
 func run(path string, args []string) error {
-	d := deputy.Deputy{
-		Errors:    deputy.FromStderr,
-		StdoutLog: func(b []byte) { log.Print(string(b)) },
-	}
 	// put a -- between the filename and the args so we don't confuse go run
 	// into thinking the first arg is another file to run.
 	realArgs := append([]string{"run", path, "--"}, args...)
 	cmd := exec.Command("go", realArgs...)
 	cmd.Stdin = os.Stdin
-	return d.Run(cmd)
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = os.Stdout
+	return cmd.Run()
 }
 
 // Generate creates the gorram .go file for the given command.
 func Generate(cmd Command) (path string, err error) {
+	path = script(cmd)
+	if !cmd.Regen {
+		if _, err := os.Stat(script(cmd)); err == nil {
+			return path, nil
+		}
+	}
 	// let's see if this is even a valid package
 	imports := map[string]bool{
 		"io":    false,
@@ -107,8 +121,7 @@ func Generate(cmd Command) (path string, err error) {
 	if err != nil {
 		return "", err
 	}
-	path, err = gen(cmd, data)
-	if err != nil {
+	if err := gen(cmd, path, data); err != nil {
 		return "", err
 	}
 	if err := goFmt(path); err != nil {
@@ -170,16 +183,13 @@ func getFunc(cmd Command, pkg *types.Package) (*types.Func, error) {
 	return f, nil
 }
 
-func gen(cmd Command, data templateData) (path string, err error) {
-	f, path, err := createFile(cmd)
+func gen(cmd Command, path string, data templateData) error {
+	f, err := createFile(path)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer f.Close()
-	if err := templ.Execute(f, data); err != nil {
-		return "", err
-	}
-	return path, nil
+	return templ.Execute(f, data)
 }
 
 type templateData struct {

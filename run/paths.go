@@ -15,16 +15,25 @@ func confDir() string {
 	}
 }
 
-func createFile(cmd Command) (f *os.File, path string, err error) {
-	dir := filepath.Join(confDir(), filepath.FromSlash(cmd.Package))
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, "", err
+func createFile(path string) (f *os.File, err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
 	}
+	return os.Create(path)
+}
+
+func dir(cmd Command) string {
+	base := cmd.Cache
+	if cmd.Cache == "" {
+		base = confDir()
+	}
+	return filepath.Join(base, filepath.FromSlash(cmd.Package))
+}
+
+func script(cmd Command) string {
 	name := cmd.Function
 	if cmd.GlobalVar != "" {
 		name = cmd.GlobalVar + "." + cmd.Function
 	}
-	path = filepath.Join(dir, name+".go")
-	f, err = os.Create(path)
-	return f, path, err
+	return filepath.Join(dir(cmd), name+".go")
 }

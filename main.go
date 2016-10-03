@@ -12,20 +12,11 @@
 package main
 
 import (
-	"log"
 	"os"
 
 	"npf.io/gorram/cli"
-	"npf.io/gorram/run"
 )
 
 func main() {
-	log.SetFlags(0)
-	cmd, args, err := cli.Parse(os.Args[1:])
-	if err != nil {
-		log.Fatal(err)
-	}
-	if err := run.Run(cmd, args); err != nil {
-		log.Fatal(err)
-	}
+	os.Exit(cli.Parse(os.Args[1:]))
 }
