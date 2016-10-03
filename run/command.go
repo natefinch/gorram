@@ -1,4 +1,4 @@
-package run
+package run // import "npf.io/gorram/run"
 
 import (
 	"errors"
@@ -96,23 +96,10 @@ func Generate(cmd Command) (path string, err error) {
 
 	// Find the package and package-level object.
 	pkg := lprog.Package(cmd.Package).Pkg
-	scope := pkg.Scope()
-	// TODO(natefinch): support globalvar.Method
-	// if cmd.GlobalVar != nil {
-	// 	obj := scope.Lookup(cmd.GlobalVar)
-	// 	obj.Type()
-	// 	obj := obj.Scope().Lookup(cmd.Function)
-	// }
-	obj := scope.Lookup(cmd.Function)
-	if obj == nil {
-		return "", fmt.Errorf("%s.%s not found", cmd.Package, cmd.Function)
-	}
-	f, ok := obj.(*types.Func)
-	if !ok {
-		return "", fmt.Errorf("%s.%s is not a function", cmd.Package, cmd.Function)
-	}
-	if !f.Exported() {
-		return "", fmt.Errorf("%s.%s is not exported", cmd.Package, cmd.Function)
+
+	f, err := getFunc(cmd, pkg)
+	if err != nil {
+		return "", err
 	}
 	// guaranteed to work per types.Cloud docs.
 	sig := f.Type().(*types.Signature)
@@ -120,7 +107,67 @@ func Generate(cmd Command) (path string, err error) {
 	if err != nil {
 		return "", err
 	}
-	return gen(cmd, data)
+	path, err = gen(cmd, data)
+	if err != nil {
+		return "", err
+	}
+	if err := goFmt(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func goFmt(path string) error {
+	d := deputy.Deputy{
+		Errors:    deputy.FromStderr,
+		StdoutLog: func(b []byte) { log.Print(string(b)) },
+	}
+	// put a -- between the filename and the args so we don't confuse go run
+	// into thinking the first arg is another file to run.
+	cmd := exec.Command("gofmt", "-s", "-w", path)
+	cmd.Stdin = os.Stdin
+	return d.Run(cmd)
+}
+
+func getFunc(cmd Command, pkg *types.Package) (*types.Func, error) {
+	if cmd.GlobalVar == "" {
+		obj := pkg.Scope().Lookup(cmd.Function)
+		if obj == nil {
+			return nil, fmt.Errorf("%s.%s not found", cmd.Package, cmd.Function)
+		}
+		f, ok := obj.(*types.Func)
+		if !ok {
+			return nil, fmt.Errorf("%s.%s is not a function", cmd.Package, cmd.Function)
+		}
+		if !f.Exported() {
+			return nil, fmt.Errorf("%s.%s is not exported", cmd.Package, cmd.Function)
+		}
+		return f, nil
+	}
+	obj := pkg.Scope().Lookup(cmd.GlobalVar)
+	if obj == nil {
+		return nil, fmt.Errorf("%s.%s not found", cmd.Package, cmd.GlobalVar)
+	}
+	v, ok := obj.(*types.Var)
+	if !ok {
+		return nil, fmt.Errorf("%s.%s is not a global variable", cmd.Package, cmd.GlobalVar)
+	}
+	if !v.Exported() {
+		return nil, fmt.Errorf("%s.%s is not exported", cmd.Package, cmd.GlobalVar)
+	}
+	methods := types.NewMethodSet(v.Type())
+	sel := methods.Lookup(pkg, cmd.Function)
+	if sel == nil {
+		return nil, fmt.Errorf("%s.%s.%s not found", cmd.Package, cmd.GlobalVar, cmd.Function)
+	}
+	f, ok := sel.Obj().(*types.Func)
+	if !ok {
+		return nil, fmt.Errorf("%s.%s.%s is not a method", cmd.Package, cmd.GlobalVar, cmd.Function)
+	}
+	if !f.Exported() {
+		return nil, fmt.Errorf("%s.%s.%s is not exported", cmd.Package, cmd.GlobalVar, cmd.Function)
+	}
+	return f, nil
 }
 
 func gen(cmd Command, data templateData) (path string, err error) {
@@ -140,6 +187,7 @@ type templateData struct {
 	Args         string
 	NumCLIArgs   int
 	PkgName      string
+	GlobalVar    string
 	Func         string
 	SrcIdx       int
 	DstIdx       int
@@ -161,6 +209,7 @@ func compileData(cmd Command, sig *types.Signature) (templateData, error) {
 	data := templateData{
 		PkgName:    path.Base(cmd.Package),
 		Func:       cmd.Function,
+		GlobalVar:  cmd.GlobalVar,
 		HasLen:     hasLen(sig.Results()),
 		SrcIdx:     -1,
 		DstIdx:     -1,
@@ -420,32 +469,6 @@ func hasLen(results *types.Tuple) bool {
 	}
 	return false
 }
-
-// // Our simplest case - no args, one return, like time.Now().
-// var zeroOne = template.Must(template.New("").Parse(`
-// package main
-
-// import (
-// 	"fmt"
-// 	"log"
-// 	"os"
-// 	{{ if not (eq .Import "log" "fmt" "os") }}
-// 	"{{.Import}}"
-// 	{{- end -}}
-// )
-
-// func main() {
-// 	log.SetFlags(0)
-// 	if len(os.Args) > 1 {
-// 		log.Fatalf("Expected no arguments, but got %d args.\n\n", len(os.Args)-1)
-// 	}
-// 	{{if .Params.Len eq }}
-// 	val := {{.Package}}.{{.Func}}()
-// 	if _, err := fmt.Fprintln(os.Stdout, val); err != nil {
-// 		log.Fatal(err)
-// 	}
-// }
-// `))
 
 type srcHandler struct {
 	// Type is the type, duh.

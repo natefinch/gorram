@@ -1,11 +1,11 @@
-package cli
+package cli // import "npf.io/gorram/cli"
 
 import (
 	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/natefinch/gorram/run"
+	"npf.io/gorram/run"
 )
 
 // Parse converts the gorram command line (not including executable name) and

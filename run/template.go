@@ -6,7 +6,7 @@ var templ = template.Must(template.New("").Parse(`
 package main
 
 import (
-{{range $import, $ignored := .Imports}}
+{{range $import, $ignored := .Imports -}}
 	"{{$import}}"
 {{end}}
 )
@@ -37,7 +37,8 @@ func main() {
 	{{end}}
 	{{.DstInit}}
 
-	{{.Results}}{{.PkgName}}.{{.Func}}({{.Args}})
+
+	{{.Results}}{{.PkgName}}.{{if .GlobalVar}}{{.GlobalVar}}.{{end}}{{.Func}}({{.Args}})
 	{{.ErrCheck}}
 	{{if ne .DstIdx -1}}
 	{{.DstToStdout}}

@@ -15,8 +15,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/natefinch/gorram/cli"
-	"github.com/natefinch/gorram/run"
+	"npf.io/gorram/cli"
+	"npf.io/gorram/run"
 )
 
 func main() {

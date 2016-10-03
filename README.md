@@ -23,7 +23,6 @@ Calculate a sha256 sum:
 
 ```
 $ gorram crypto/sha256.Sum256 foo.gz
-
 abcdef012345678
 ```
 
@@ -99,3 +98,16 @@ func Cos(x float64) float64
 
 Gorram understands how to convert CLI arguments using the stringconv.Parse*
 functions, and will print outputs with `fmt.Printf("%v\n", val)`.
+
+
+```
+usage:
+$ echo 12345 | gorram encoding/base64.StdEncoding.EncodeToString
+MTIzNDU2Cg==
+
+function:
+// base64
+func (e *Encoding) EncodeToString(b []byte]) string
+```
+Gorram understands that packages have global variables that have methods you can
+call.
