@@ -19,6 +19,9 @@ func main() {
 	{{if gt .NumCLIArgs 0}}
 	// strip off the executable name and the -- that we put in so that go run
 	// won't treat arguments to the script as files to run.
+	if len(os.Args) < 3 {
+		log.Fatal("Not enough arguments.\n\n")
+	}
 	args := os.Args[2:]
 	{{end}}
 	{{if ne .SrcIdx -1}}
