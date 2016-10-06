@@ -3,7 +3,7 @@ package cli // import "npf.io/gorram/cli"
 import (
 	"flag"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 
 	"npf.io/gorram/run"
@@ -13,55 +13,104 @@ import (
 // location where gorram stores its script files.
 const CacheEnv = "GORRAM_CACHE"
 
-// Parse converts the gorram command line (not including executable name) and
-// returns a gorram run command and the unused args. The return value is the
-// code to exit with.
-func Parse(args []string) int {
-	fs := flag.NewFlagSet("", flag.ContinueOnError)
-	regen := fs.Bool("r", false, "regenerate script file even if it already exists")
-	err := fs.Parse(os.Args[1:])
-	switch {
-	case err == flag.ErrHelp:
-		usage()
-		return 0
-	case err != nil:
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		return 2
+// OSEnv encapsulates the gorram environment.
+type OSEnv struct {
+	Args   []string
+	Stderr io.Writer
+	Stdout io.Writer
+	Stdin  io.Reader
+	Env    map[string]string
+}
+
+// ParseAndRun parses the environment to create a run.Command and runs it.  It
+// returns the code that should be used for os.Exit.
+func ParseAndRun(env OSEnv) int {
+	cmd, err := Parse(env)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err.Error())
+		return code(err)
 	}
-	args = fs.Args()
-	if len(args) == 0 {
-		usage()
-		return 0
+	renv := run.Env{
+		Stderr: env.Stderr,
+		Stdout: env.Stdout,
+		Stdin:  env.Stdin,
 	}
-	cmd := run.Command{}
-	cmd.Regen = regen != nil && *regen
-	parts := strings.Split(args[0], ".")
-	switch len(parts) {
-	case 2:
-		cmd.Package = parts[0]
-		cmd.Function = parts[1]
-	case 3:
-		cmd.Package = parts[0]
-		cmd.GlobalVar = parts[1]
-		cmd.Function = parts[2]
-	default:
-		fmt.Fprintf(os.Stderr, `Command %q invalid. Expected "package.Function" or "package.Varable.Method".`, args[0])
-		return 2
-	}
-	if err := run.Run(cmd, args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
+	if err := run.Run(cmd, renv); err != nil {
+		fmt.Fprintln(env.Stderr, err.Error())
 		return 1
 	}
 	return 0
 }
 
-func usage() {
-	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintf(os.Stderr, `
-%s [OPTION] <pkg.func | pkg.var.func> [args...]
+func code(err error) int {
+	type coded interface {
+		Code() int
+	}
+	if c, ok := err.(coded); ok {
+		return c.Code()
+	}
+	return 1
+}
+
+// Parse converts the gorram command line.  If an error is returned, the program
+// should exit with the code specified by the error's Code() int function.
+func Parse(env OSEnv) (run.Command, error) {
+	fs := flag.NewFlagSet("", flag.ContinueOnError)
+	regen := fs.Bool("r", false, "")
+	err := fs.Parse(env.Args[1:])
+	switch {
+	case err == flag.ErrHelp:
+		return run.Command{}, codeError{code: 0, msg: usage}
+	case err != nil:
+		return run.Command{}, codeError{code: 2, msg: err.Error()}
+	}
+	args := fs.Args()
+	if len(args) == 0 {
+		return run.Command{}, codeError{code: 0, msg: usage}
+	}
+	if len(args) == 1 {
+		return run.Command{}, codeError{code: 2, msg: usage}
+	}
+	cmd := run.Command{
+		Args:    args[2:],
+		Regen:   regen != nil && *regen,
+		Package: args[0],
+	}
+	parts := strings.Split(args[1], ".")
+	switch len(parts) {
+	case 1:
+		cmd.Function = parts[0]
+	case 2:
+		cmd.GlobalVar = parts[0]
+		cmd.Function = parts[1]
+	default:
+		return run.Command{}, codeError{code: 2, msg: fmt.Sprintf(`Command %q invalid. Expected "importpath Function" or "importpath Varable.Method".`, args[0])}
+	}
+	if d := env.Env[CacheEnv]; d != "" {
+		cmd.Cache = d
+	}
+	return cmd, nil
+}
+
+type codeError struct {
+	code int
+	msg  string
+}
+
+func (c codeError) Error() string {
+	return c.msg
+}
+
+func (c codeError) Code() int {
+	return c.code
+}
+
+const usage = `Usage:
+gorram [OPTION] <pkg> <func | var.method> [args...]
 
 Options:
-  -r	regenerate the script generated for the given function
+  -r	      regenerate the script generated for the given function
+  -h, --help  display this help
 
 Executes a go function or an method on a global variable defined in a package in
 the stdlib or a package in your GOPATH.  Package must be the full package import
@@ -74,6 +123,12 @@ to a stream input is expected to be a filename.
 
 Return values are printed to stdout.  If the function has an output argument,
 like io.Reader or *bytes.Buffer, it is automatically passed in and then written
-to stdout. 
-`, os.Args[0])
-}
+to stdout.
+
+Example:
+
+$ echo '{"a":"b"}' | gorram encoding/json Indent "" "  "
+{
+  "a" : "b"
+} 
+`

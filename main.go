@@ -18,5 +18,5 @@ import (
 )
 
 func main() {
-	os.Exit(cli.Parse(os.Args[1:]))
+	os.Exit(cli.Run())
 }

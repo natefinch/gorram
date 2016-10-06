@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"go/types"
+	"io"
 	"os"
 	"os/exec"
-	"path"
 	"sort"
 	"strings"
 
@@ -46,6 +46,8 @@ var ioWriter *types.Interface
 // represents a package and either global function or a method call on a global
 // variable.  If GlobalVar is non-empty, it's the latter.
 type Command struct {
+	// Args contains the arguments to the function.
+	Args []string
 	// Package the function exists in.
 	Package string
 	// Function (or method) to call.
@@ -61,29 +63,37 @@ type Command struct {
 	Cache string
 }
 
+// Env encapsulates the externalities of the environment in which a command is
+// running.
+type Env struct {
+	Stderr io.Writer
+	Stdout io.Writer
+	Stdin  io.Reader
+}
+
 // Run generates the gorram .go file if it doesn't already exist and then runs
 // it with the given args.
-func Run(cmd Command, args []string) error {
-	path, err := Generate(cmd)
+func Run(cmd Command, env Env) error {
+	path, err := Generate(cmd, env)
 	if err != nil {
 		return err
 	}
-	return run(path, args)
+	return run(path, cmd.Args, env)
 }
 
-func run(path string, args []string) error {
+func run(path string, args []string, env Env) error {
 	// put a -- between the filename and the args so we don't confuse go run
 	// into thinking the first arg is another file to run.
 	realArgs := append([]string{"run", path, "--"}, args...)
 	cmd := exec.Command("go", realArgs...)
-	cmd.Stdin = os.Stdin
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
+	cmd.Stdin = env.Stdin
+	cmd.Stderr = env.Stderr
+	cmd.Stdout = env.Stdout
 	return cmd.Run()
 }
 
 // Generate creates the gorram .go file for the given command.
-func Generate(cmd Command) (path string, err error) {
+func Generate(cmd Command, env Env) (path string, err error) {
 	path = script(cmd)
 	if !cmd.Regen {
 		if _, err := os.Stat(script(cmd)); err == nil {
@@ -114,25 +124,25 @@ func Generate(cmd Command) (path string, err error) {
 	}
 	// guaranteed to work per types.Cloud docs.
 	sig := f.Type().(*types.Signature)
-	data, err := compileData(cmd, sig)
+	data, err := compileData(cmd, pkg.Name(), sig)
 	if err != nil {
 		return "", err
 	}
 	if err := gen(cmd, path, data); err != nil {
 		return "", err
 	}
-	if err := goFmt(path); err != nil {
+	if err := goFmt(path, env); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
-func goFmt(path string) error {
+func goFmt(path string, env Env) error {
 	// put a -- between the filename and the args so we don't confuse go run
 	// into thinking the first arg is another file to run.
 	cmd := exec.Command("gofmt", "-s", "-w", path)
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
+	cmd.Stderr = env.Stderr
+	cmd.Stdout = env.Stdout
 	return cmd.Run()
 }
 
@@ -209,9 +219,9 @@ type templateData struct {
 	ArgInits     []string
 }
 
-func compileData(cmd Command, sig *types.Signature) (templateData, error) {
+func compileData(cmd Command, pkgName string, sig *types.Signature) (templateData, error) {
 	data := templateData{
-		PkgName:    path.Base(cmd.Package),
+		PkgName:    pkgName,
 		Func:       cmd.Function,
 		GlobalVar:  cmd.GlobalVar,
 		HasLen:     hasLen(sig.Results()),

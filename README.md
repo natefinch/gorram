@@ -6,7 +6,10 @@
 
 It's like go run for any go function.
 
-Automagically understands how to produce an interface from the command line into a Go function.
+Automagically understands how to produce an interface from the command line into
+a Go function.
+
+*Sometimes, magic is just someone spending more time on something than anyone else might reasonably expect.* -Teller
 
 ## Installation
 
@@ -22,7 +25,7 @@ dynamically analyzes go code in the stdlib and in your GOPATH.
 Pretty print JSON:
 
 ```
-$ echo '{ "foo" : "bar" }' | gorram encoding/json.Indent "" $'\t'
+$ echo '{ "foo" : "bar" }' | gorram encoding/json Indent "" $'\t'
 {
     "foo" : "bar"
 }
@@ -31,7 +34,7 @@ $ echo '{ "foo" : "bar" }' | gorram encoding/json.Indent "" $'\t'
 Calculate a sha256 sum:
 
 ```
-$ gorram crypto/sha256.Sum256 foo.gz
+$ gorram crypto/sha256 Sum256 foo.gz
 abcdef012345678
 ```
 
@@ -55,9 +58,9 @@ For example:
 
 ```
 usage:
-$ cat foo.zip | gorram crypto/sha1.Sum
+$ cat foo.zip | gorram crypto/sha1 Sum
 or
-$ gorram crypto/sha1.Sum foo.zip
+$ gorram crypto/sha1 Sum foo.zip
 
 function:
 // crypto/sha1
@@ -74,9 +77,9 @@ printed with fmt's %x, so that you get `2c37424d58` instead of `[44 55 66 77
 
 ```
 usage:
-$ gorram encoding/json.Indent foo.json "" $'\t'
+$ gorram encoding/json Indent foo.json "" $'\t'
 or
-$ cat foo.json | gorram encoding/json.Indent "" $'\t'
+$ cat foo.json | gorram encoding/json Indent "" $'\t'
 
 function:
 // encoding/json
@@ -98,7 +101,7 @@ specified in the command line.
 
 ```
 usage:
-$ gorram math.Cos 25
+$ gorram math Cos 25
 
 function:
 // math
@@ -111,7 +114,7 @@ functions, and will print outputs with `fmt.Printf("%v\n", val)`.
 
 ```
 usage:
-$ echo 12345 | gorram encoding/base64.StdEncoding.EncodeToString
+$ echo 12345 | gorram encoding/base64 StdEncoding.EncodeToString
 MTIzNDU2Cg==
 
 function:
