@@ -370,19 +370,64 @@ func isByteArray(t types.Type) bool {
 	return types.Identical(arr.Elem(), types.Typ[types.Byte])
 }
 
+func isReader(t types.Type) bool {
+	return types.Implements(t, ioReader)
+}
+
+func hasReader(t types.Type) bool {
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	t = t.Underlying()
+
+	s, ok := t.(*types.Struct)
+	if !ok {
+		return false
+	}
+	for x := 0; x < s.NumFields(); x++ {
+		f := s.Field(x)
+		if f.Exported() && isReader(f.Type()) {
+			return true
+		}
+	}
+	return false
+}
+
+func readerField(t types.Type) string {
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	t = t.Underlying()
+	s, ok := t.(*types.Struct)
+	if !ok {
+		// should be impossible!
+		panic(fmt.Sprintf("type %q should be a struct but is not", t))
+	}
+	for x := 0; x < s.NumFields(); x++ {
+		f := s.Field(x)
+		if f.Exported() && isReader(f.Type()) {
+			return f.Name()
+		}
+	}
+	panic(fmt.Sprintf("type %q should have a field that implements io.Reader but does not", t))
+}
+
 type retHandler struct {
 	Filter  func(types.Type) bool
 	Imports []string
-	Code    string
+	Code    func(types.Type) string
 }
 
 var defaultRetHandler = retHandler{
 	Imports: []string{"os", "fmt", "log"},
-	Code: `
+	Code: func(types.Type) string {
+		return `
 	if _, err := fmt.Fprintf(os.Stdout, "%v\n", val); err != nil {
 		log.Fatal(err)
 	}
-`}
+`
+	},
+}
 
 func getRetHandler(t types.Type) retHandler {
 	for _, h := range retHandlers {
@@ -397,11 +442,42 @@ var retHandlers = []retHandler{
 	{
 		Filter:  isByteArray,
 		Imports: []string{"fmt", "os", "log"},
-		Code: `
+		Code: func(types.Type) string {
+			return `
 if _, err := fmt.Fprintf(os.Stdout, "%x\n", val); err != nil {
 		log.Fatal(err)
 	}
-`,
+`
+		},
+	},
+	{
+		Filter:  isReader,
+		Imports: []string{"fmt", "os", "log", "io"},
+		Code: func(types.Type) string {
+			return `
+	_, err := io.Copy(os.Stdout, val); err != nil {
+		log.Fatal(err)
+	}
+`
+		},
+	},
+	{
+		Filter:  hasReader,
+		Imports: []string{"fmt", "os", "log", "io"},
+		Code: func(t types.Type) string {
+			return fmt.Sprintf(`
+	n, err := io.Copy(os.Stdout, val.%s)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if n == 0 {
+		if _, err := fmt.Fprintf(os.Stdout, "%%v\n", val); err != nil {
+			log.Fatal(err)
+		}
+	}
+	fmt.Println("")
+`, readerField(t))
+		},
 	},
 }
 
@@ -454,7 +530,7 @@ func (data *templateData) parseResults(results *types.Tuple) error {
 
 func (data *templateData) setReturnType(t types.Type) {
 	h := getRetHandler(t)
-	data.PrintVal = h.Code
+	data.PrintVal = h.Code(t)
 	for _, imp := range h.Imports {
 		data.Imports[imp] = struct{}{}
 	}
@@ -543,25 +619,50 @@ func stdinToSrc() []byte {
 `},
 		{
 			Type:    ioReaderType,
-			Imports: []string{"io", "os"},
+			Imports: []string{"io", "os", "log"},
 			Init:    "var src io.Reader",
 			ArgToSrc: `
 func argsToSrc(args []string) (io.Reader, []string) {
 	srcIdx := %d
 	// yes, I know I never close this. It gets closed when the process exits.
 	// It's ugly, but it works and it simplifies the code.  Sorry.
-	src, err = os.Open(args[srcIdx])
+	src, err := os.Open(args[srcIdx])
 	if err != nil {
 		log.Fatal(err)
 	}
 	// Take out the src arg.
-	args = append(args[:srcIdx], args[srcIdx+1]...)
+	args = append(args[:srcIdx], args[srcIdx+1:]...)
 	return src, args
 }
 `,
 			StdinToSrc: `
 func stdinToSrc() io.Reader {
 	return os.Stdin
+}
+`},
+		{
+			Type:    types.Typ[types.String],
+			Imports: []string{"io/ioutil", "log"},
+			Init:    "var src string",
+			ArgToSrc: `
+func argsToSrc(args []string) (string, []string) {
+	srcIdx := %d
+	src, err := ioutil.ReadFile(args[srcIdx])
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Take out the src arg.
+	args = append(args[:srcIdx], args[srcIdx+1:]...)
+	return string(src), args
+}
+`,
+			StdinToSrc: `
+func stdinToSrc() string {
+	src, err := ioutil.ReadAll(os.Stdin)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return string(src)
 }
 `},
 	}
@@ -597,18 +698,23 @@ func setDstHandlers() {
 	dstHandlers = []dstHandler{
 		{
 			Type:    ptrBytesBufferType,
-			Imports: []string{"bytes", "io"},
+			Imports: []string{"bytes", "io", "fmt"},
 			Init:    "dst := &bytes.Buffer{}",
 			ToStdout: `
 	if _, err := io.Copy(os.Stdout, dst); err != nil {
 		log.Fatal(err)
 	}
+	// ensure we end with at least one line return.
+	fmt.Println("")
 `},
 		{
 			Type:    ioWriterType,
-			Imports: []string{"os"},
+			Imports: []string{"os", "fmt"},
 			Init:    "dst := os.Stdout",
-			// no ToStdout needed, since dst *is* stdout.
+			ToStdout: `
+	// ensure we end with at least one line return
+	fmt.Println("")
+			`,
 		},
 	}
 }
