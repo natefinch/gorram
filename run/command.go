@@ -640,31 +640,6 @@ func stdinToSrc() io.Reader {
 	return os.Stdin
 }
 `},
-		{
-			Type:    types.Typ[types.String],
-			Imports: []string{"io/ioutil", "log"},
-			Init:    "var src string",
-			ArgToSrc: `
-func argsToSrc(args []string) (string, []string) {
-	srcIdx := %d
-	src, err := ioutil.ReadFile(args[srcIdx])
-	if err != nil {
-		log.Fatal(err)
-	}
-	// Take out the src arg.
-	args = append(args[:srcIdx], args[srcIdx+1:]...)
-	return string(src), args
-}
-`,
-			StdinToSrc: `
-func stdinToSrc() string {
-	src, err := ioutil.ReadAll(os.Stdin)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return string(src)
-}
-`},
 	}
 }
 
