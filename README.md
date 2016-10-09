@@ -126,7 +126,7 @@ call.
 ```
 usage: 
 $ gorram net/http Get https://google.com
-&lt;some long html output&gt;
+<some long html output>
 
 function:
 // net/http
