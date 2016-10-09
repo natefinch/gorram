@@ -13,7 +13,7 @@ a Go function.
 ## Installation
 
 ```
-go get npf.io/gorram
+go get -u npf.io/gorram
 ```
 
 Note: gorram depends on having a working go environment to function, since it
@@ -122,6 +122,21 @@ func (e *Encoding) EncodeToString(b []byte]) string
 ```
 Gorram understands that packages have global variables that have methods you can
 call.
+
+```
+usage: 
+$ gorram net/http Get https://google.com
+&lt;some long html output&gt;
+
+function:
+// net/http
+func Get(url string) (resp *Response, err error)
+```
+
+Gorram understands that if a function returns a struct, and one of the fields of
+the struct is an io.Reader, then it will output the contents of that reader.  
+(if there are no contents or it's nil, the result value will be printed with
+%v).
 
 ## Development
 
