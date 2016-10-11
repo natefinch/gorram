@@ -9,6 +9,7 @@ import (
 {{range $import, $ignored := .Imports -}}
 	"{{$import}}"
 {{end}}
+	{{if eq .DstIdx -1}}"text/template"{{end}}
 )
 
 func main() {
@@ -46,6 +47,19 @@ func main() {
 	{{if ne .DstIdx -1}}
 	{{.DstToStdout}}
 	{{else}}
+	t := os.Getenv("GORRAM_TEMPLATE")
+	if t != "" {
+		tmpl, err := template.New("").Parse(t)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = tmpl.Execute(os.Stdout, val)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("")
+		os.Exit(0)
+	}
 	{{.PrintVal}}
 	{{end}}
 }

@@ -19,6 +19,47 @@ go get -u npf.io/gorram
 Note: gorram depends on having a working go environment to function, since it
 dynamically analyzes go code in the stdlib and in your GOPATH.
 
+## Usage
+
+```
+Usage: gorram [OPTION] <pkg> <func | var.method> [args...]
+
+Options:
+  -r           regenerate the script generated for the given function
+  -t <string>  format output with a go template
+  -h, --help   display this help
+
+Executes a go function or an method on a global variable defined in a package in
+the stdlib or a package in your GOPATH.  Package must be the full package import
+path, e.g. encoding/json.  Only exported functions, methods, and variables may
+be called.
+
+Most builtin types are supported, and streams of input (via io.Reader or []byte
+for example) may be read from stdin.  If specified as an argument, the argument
+to a stream input is expected to be a filename.
+
+Return values are printed to stdout.  If the function has an output argument,
+like io.Reader or *bytes.Buffer, it is automatically passed in and then written
+to stdout.
+
+If there's no output stream, the return value is simply written to stdout via
+fmt.Println.  If the return value is a struct that has an exported field that is
+an io.Reader (such as net/http.Request), then that will be treated as the output
+value, unless it's empty, in which case we fall back to printing the output
+value.
+
+A template specified with -t may either be a template definition (e.g.
+{{.Status}}) or a filename, in which case the contents of the file will be used
+as the template.
+
+Gorram creates a script file in $GORRAM_CACHE, or, if not set, in
+$HOME/.gorram/importpath/Name.go.  Running with -r will re-generate that script
+file, otherwise it is reused.
+
+```
+
+
+
 ## Examples
 
 Pretty print JSON:

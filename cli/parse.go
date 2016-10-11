@@ -1,17 +1,15 @@
 package cli // import "npf.io/gorram/cli"
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"strings"
 
 	"npf.io/gorram/run"
 )
-
-// CacheEnv is the environment variable that users may set to change the
-// location where gorram stores its script files.
-const CacheEnv = "GORRAM_CACHE"
 
 // OSEnv encapsulates the gorram environment.
 type OSEnv struct {
@@ -25,58 +23,81 @@ type OSEnv struct {
 // ParseAndRun parses the environment to create a run.Command and runs it.  It
 // returns the code that should be used for os.Exit.
 func ParseAndRun(env OSEnv) int {
-	cmd, err := Parse(env)
+	ui, err := Parse(env)
+	switch {
+	case err == flag.ErrHelp:
+		fmt.Fprintln(env.Stderr, usage)
+		return 0
+	case err != nil:
+		fmt.Fprintln(env.Stderr, err.Error())
+		return 2
+	}
+	if len(ui.Args) == 0 {
+		fmt.Fprintln(env.Stderr, usage)
+		return 0
+	}
+	c, err := parseCommand(ui, env)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err.Error())
-		return code(err)
+		return 2
 	}
-	renv := run.Env{
-		Stderr: env.Stderr,
-		Stdout: env.Stdout,
-		Stdin:  env.Stdin,
-	}
-	if err := run.Run(cmd, renv); err != nil {
+	if err := run.Run(c); err != nil {
 		fmt.Fprintln(env.Stderr, err.Error())
 		return 1
 	}
 	return 0
 }
 
-func code(err error) int {
-	type coded interface {
-		Code() int
-	}
-	if c, ok := err.(coded); ok {
-		return c.Code()
-	}
-	return 1
+// UI represents the UI of the CLI, including flags and actions.
+type UI struct {
+	Regen    bool
+	Template string
+	Cache    string
+	Args     []string
 }
 
 // Parse converts the gorram command line.  If an error is returned, the program
 // should exit with the code specified by the error's Code() int function.
-func Parse(env OSEnv) (run.Command, error) {
+func Parse(env OSEnv) (*UI, error) {
+	ui := &UI{
+		Cache: confDir(env.Env),
+	}
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
-	regen := fs.Bool("r", false, "")
-	err := fs.Parse(env.Args[1:])
-	switch {
-	case err == flag.ErrHelp:
-		return run.Command{}, codeError{code: 0, msg: usage}
-	case err != nil:
-		return run.Command{}, codeError{code: 2, msg: err.Error()}
+	fs.BoolVar(&ui.Regen, "r", false, "")
+	fs.StringVar(&ui.Template, "t", "", "")
+	if err := fs.Parse(env.Args[1:]); err != nil {
+		return nil, err
 	}
-	args := fs.Args()
-	if len(args) == 0 {
-		return run.Command{}, codeError{code: 0, msg: usage}
+	if ui.Template != "" {
+		// try to treat the template as a file on the assumption that no one
+		// will ever have template that matched a local filename.
+		b, err := ioutil.ReadFile(ui.Template)
+		if err == nil {
+			ui.Template = string(b)
+		}
+		// else, not a file, assume the template is just a raw template.
 	}
-	if len(args) == 1 {
-		return run.Command{}, codeError{code: 2, msg: usage}
+	ui.Args = fs.Args()
+	return ui, nil
+}
+
+func parseCommand(ui *UI, env OSEnv) (*run.Command, error) {
+	if len(ui.Args) < 2 {
+		return nil, errors.New(usage)
 	}
-	cmd := run.Command{
-		Args:    args[2:],
-		Regen:   regen != nil && *regen,
-		Package: args[0],
+	cmd := &run.Command{
+		Args:     ui.Args[2:],
+		Regen:    ui.Regen,
+		Template: ui.Template,
+		Package:  ui.Args[0],
+		Cache:    ui.Cache,
+		Env: run.Env{
+			Stderr: env.Stderr,
+			Stdout: env.Stdout,
+			Stdin:  env.Stdin,
+		},
 	}
-	parts := strings.Split(args[1], ".")
+	parts := strings.Split(ui.Args[1], ".")
 	switch len(parts) {
 	case 1:
 		cmd.Function = parts[0]
@@ -84,33 +105,19 @@ func Parse(env OSEnv) (run.Command, error) {
 		cmd.GlobalVar = parts[0]
 		cmd.Function = parts[1]
 	default:
-		return run.Command{}, codeError{code: 2, msg: fmt.Sprintf(`Command %q invalid. Expected "importpath Function" or "importpath Varable.Method".`, args[0])}
+		return nil, fmt.Errorf(`Command %q invalid. Expected "importpath Function" or "importpath Varable.Method".`, ui.Args[0])
 	}
-	if d := env.Env[CacheEnv]; d != "" {
-		cmd.Cache = d
-	}
+
 	return cmd, nil
-}
-
-type codeError struct {
-	code int
-	msg  string
-}
-
-func (c codeError) Error() string {
-	return c.msg
-}
-
-func (c codeError) Code() int {
-	return c.code
 }
 
 const usage = `Usage:
 gorram [OPTION] <pkg> <func | var.method> [args...]
 
 Options:
-  -r	      regenerate the script generated for the given function
-  -h, --help  display this help
+  -r           regenerate the script generated for the given function
+  -t <string>  format output with a go template
+  -h, --help   display this help
 
 Executes a go function or an method on a global variable defined in a package in
 the stdlib or a package in your GOPATH.  Package must be the full package import
@@ -124,6 +131,20 @@ to a stream input is expected to be a filename.
 Return values are printed to stdout.  If the function has an output argument,
 like io.Reader or *bytes.Buffer, it is automatically passed in and then written
 to stdout.
+
+If there's no output stream, the return value is simply written to stdout via
+fmt.Println.  If the return value is a struct that has an exported field that is
+an io.Reader (such as net/http.Request), then that will be treated as the output
+value, unless it's empty, in which case we fall back to printing the output
+value.
+
+A template specified with -t may either be a template definition (e.g.
+{{.Status}}) or a filename, in which case the contents of the file will be used
+as the template.
+
+Gorram creates a script file in $GORRAM_CACHE, or, if not set, in
+$HOME/.gorram/importpath/Name.go.  Running with -r will re-generate that script
+file, otherwise it is reused.
 
 Example:
 

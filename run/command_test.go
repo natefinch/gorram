@@ -29,7 +29,12 @@ func TestTimeNow(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 	}
-	err = Run(Command{Package: "time", Function: "Now", Cache: dir}, env)
+	err = Run(&Command{
+		Package:  "time",
+		Function: "Now",
+		Cache:    dir,
+		Env:      env,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -58,12 +63,13 @@ func TestMathSqrt(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 	}
-	err = Run(Command{
+	err = Run(&Command{
 		Package:  "math",
 		Function: "Sqrt",
 		Args:     []string{"25.4"},
-		Cache:    dir},
-		env)
+		Cache:    dir,
+		Env:      env,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,13 +99,16 @@ func TestJsonIndentStdin(t *testing.T) {
 		Stdout: stdout,
 		Stdin:  stdin,
 	}
-	err = Run(Command{
+	err = Run(&Command{
 		Package:  "encoding/json",
 		Function: "Indent",
 		Args:     []string{"", "  "},
-		Cache:    dir},
-		env)
+		Cache:    dir,
+		Env:      env,
+	})
 	if err != nil {
+		t.Logf("stderr: %s", stderr.String())
+		t.Logf("stdout: %s", stderr.String())
 		t.Fatalf("unexpected error: %v", err)
 	}
 	out := stdout.String()
@@ -135,17 +144,58 @@ func TestNetHTTPGet(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 	}
-	err = Run(Command{
+	err = Run(&Command{
 		Package:  "net/http",
 		Function: "Get",
 		Args:     []string{ts.URL},
-		Cache:    dir},
-		env)
+		Cache:    dir,
+		Env:      env,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	out := stdout.String()
 	expected := "Hello, client\n\n"
+	if out != expected {
+		t.Fatalf("Expected %q but got %q", expected, out)
+	}
+}
+
+// func Get(url string) (resp *Response, err error)
+// Tests a single string argument.
+// Tests val, err return value.
+// Tests template output.
+func TestNetHTTPGetWithTemplate(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "Hello, client")
+	}))
+	defer ts.Close()
+
+	dir, err := ioutil.TempDir("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(dir)
+	stderr := &bytes.Buffer{}
+	stdout := &bytes.Buffer{}
+	env := Env{
+		Stderr: stderr,
+		Stdout: stdout,
+	}
+	err = Run(&Command{
+		Package:  "net/http",
+		Function: "Get",
+		Args:     []string{ts.URL},
+		Cache:    dir,
+		Env:      env,
+		Template: "{{.Status}}",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stdout.String()
+	expected := "200 OK\n"
 	if out != expected {
 		t.Fatalf("Expected %q but got %q", expected, out)
 	}
@@ -172,13 +222,14 @@ func TestBase64EncodeToStringFromFilename(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 	}
-	err = Run(Command{
+	err = Run(&Command{
 		Package:   "encoding/base64",
 		GlobalVar: "StdEncoding",
 		Function:  "EncodeToString",
 		Args:      []string{filename},
-		Cache:     dir},
-		env)
+		Cache:     dir,
+		Env:       env,
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

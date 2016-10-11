@@ -7,40 +7,18 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/loader"
 )
 
-func initTypes(prog *loader.Program) {
-	buf := prog.Package("bytes").Pkg.Scope().Lookup("Buffer").Type()
-	ptrBytesBufferType = types.NewPointer(buf)
-
-	errorType = types.Universe.Lookup("error").Type()
-	ioReaderType = prog.Package("io").Pkg.Scope().Lookup("Reader").Type()
-	ioWriterType = prog.Package("io").Pkg.Scope().Lookup("Writer").Type()
-	ioReader = ioReaderType.Underlying().(*types.Interface)
-	ioWriter = ioWriterType.Underlying().(*types.Interface)
-
-	// we do these here so they are definitely performed after we initialize
-	// some of the types they depend on.
-	setDstHandlers()
-	setSrcHandlers()
-	setArgConverters()
-}
-
 // Used for type comparison.
-var ptrBytesBufferType types.Type
-var errorType types.Type
-var ioReaderType types.Type
-var ioWriterType types.Type
+// These are ok to keep global since they're static.
 var byteSliceType = types.NewSlice(types.Typ[types.Byte])
 var stringType = types.Typ[types.String]
-
-// Used for types.Implements.
-var ioReader *types.Interface
-var ioWriter *types.Interface
+var errorType = types.Universe.Lookup("error").Type()
 
 // Command contains the definition of a command that gorram can execute. It
 // represents a package and either global function or a method call on a global
@@ -61,6 +39,34 @@ type Command struct {
 	// Cache, if non-empty, indicates the user has specified the non-default
 	// location for their gorram scripts to be located.
 	Cache string
+	// Template, if non-empty, contains the Go template with which to format the
+	// output.
+	Template string
+	// Env contains the input and output streams the command should read from
+	// and write to.
+	Env Env
+
+	prog *loader.Program
+
+	// Unfortunately, all the following information is dependent on the
+	// load.Program above, so we need it all to travel around with the
+	// corresponding loader.
+
+	// used for type comparison
+	pBufferType  types.Type
+	errorType    types.Type
+	ioReaderType types.Type
+	ioWriterType types.Type
+
+	// Used for types.Implements.
+	ioReader *types.Interface
+	ioWriter *types.Interface
+
+	// used for finding code to put into the script.
+	argConverters []converter
+	dstHandlers   []dstHandler
+	srcHandlers   []srcHandler
+	retHandlers   []retHandler
 }
 
 // Env encapsulates the externalities of the environment in which a command is
@@ -71,32 +77,34 @@ type Env struct {
 	Stdin  io.Reader
 }
 
-// Run generates the gorram .go file if it doesn't already exist and then runs
-// it with the given args.
-func Run(cmd Command, env Env) error {
-	path, err := Generate(cmd, env)
+// Run executes the gorram command.
+func Run(c *Command) error {
+	path, err := c.Generate()
 	if err != nil {
 		return err
 	}
-	return run(path, cmd.Args, env)
+	return c.run(path, c.Template)
 }
 
-func run(path string, args []string, env Env) error {
+func (c *Command) run(path, template string) error {
 	// put a -- between the filename and the args so we don't confuse go run
 	// into thinking the first arg is another file to run.
-	realArgs := append([]string{"run", path, "--"}, args...)
-	cmd := exec.Command("go", realArgs...)
-	cmd.Stdin = env.Stdin
-	cmd.Stderr = env.Stderr
-	cmd.Stdout = env.Stdout
+	args := append([]string{"run", path, "--"}, c.Args...)
+	cmd := exec.Command("go", args...)
+	cmd.Stdin = c.Env.Stdin
+	cmd.Stderr = c.Env.Stderr
+	cmd.Stdout = c.Env.Stdout
+	if template != "" {
+		cmd.Env = append([]string{"GORRAM_TEMPLATE=" + template}, os.Environ()...)
+	}
 	return cmd.Run()
 }
 
 // Generate creates the gorram .go file for the given command.
-func Generate(cmd Command, env Env) (path string, err error) {
-	path = script(cmd)
-	if !cmd.Regen {
-		if _, err := os.Stat(script(cmd)); err == nil {
+func (c *Command) Generate() (path string, err error) {
+	path = c.script()
+	if !c.Regen {
+		if _, err := os.Stat(path); err == nil {
 			return path, nil
 		}
 	}
@@ -105,89 +113,100 @@ func Generate(cmd Command, env Env) (path string, err error) {
 		"io":    false,
 		"bytes": false,
 	}
-	imports[cmd.Package] = false
+	imports[c.Package] = false
 	conf := loader.Config{
 		ImportPkgs: imports,
 	}
-	lprog, err := conf.Load()
+	p, err := conf.Load()
 	if err != nil {
 		return "", err
 	}
-	initTypes(lprog)
+	c.prog = p
+	c.initTypes()
 
-	// Find the package and package-level object.
-	pkg := lprog.Package(cmd.Package).Pkg
-
-	f, err := getFunc(cmd, pkg)
+	data, err := c.compileData()
 	if err != nil {
 		return "", err
 	}
-	// guaranteed to work per types.Cloud docs.
-	sig := f.Type().(*types.Signature)
-	data, err := compileData(cmd, pkg.Name(), sig)
-	if err != nil {
+	if err := gen(path, data); err != nil {
 		return "", err
 	}
-	if err := gen(cmd, path, data); err != nil {
-		return "", err
-	}
-	if err := goFmt(path, env); err != nil {
+	if err := goFmt(path, c.Env); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
+func (c *Command) pkg() *types.Package {
+	return c.prog.Package(c.Package).Pkg
+}
+
+func (c *Command) initTypes() {
+	buf := c.prog.Package("bytes").Pkg.Scope().Lookup("Buffer").Type()
+	c.pBufferType = types.NewPointer(buf)
+
+	c.ioReaderType = c.prog.Package("io").Pkg.Scope().Lookup("Reader").Type()
+	c.ioWriterType = c.prog.Package("io").Pkg.Scope().Lookup("Writer").Type()
+	c.ioReader = c.ioReaderType.Underlying().(*types.Interface)
+	c.ioWriter = c.ioWriterType.Underlying().(*types.Interface)
+
+	// we do these here so they are definitely performed after we initialize
+	// some of the types they depend on.
+	c.setDstHandlers()
+	c.setSrcHandlers()
+	c.setArgConverters()
+	c.setRetHandlers()
+}
+
 func goFmt(path string, env Env) error {
-	// put a -- between the filename and the args so we don't confuse go run
-	// into thinking the first arg is another file to run.
 	cmd := exec.Command("gofmt", "-s", "-w", path)
 	cmd.Stderr = env.Stderr
 	cmd.Stdout = env.Stdout
 	return cmd.Run()
 }
 
-func getFunc(cmd Command, pkg *types.Package) (*types.Func, error) {
-	if cmd.GlobalVar == "" {
-		obj := pkg.Scope().Lookup(cmd.Function)
+func (c *Command) getFunc() (*types.Func, error) {
+	if c.GlobalVar == "" {
+		obj := c.pkg().Scope().Lookup(c.Function)
 		if obj == nil {
-			return nil, fmt.Errorf("%s.%s not found", cmd.Package, cmd.Function)
+			return nil, fmt.Errorf("%s.%s not found", c.Package, c.Function)
 		}
 		f, ok := obj.(*types.Func)
 		if !ok {
-			return nil, fmt.Errorf("%s.%s is not a function", cmd.Package, cmd.Function)
+			return nil, fmt.Errorf("%s.%s is not a function", c.Package, c.Function)
 		}
 		if !f.Exported() {
-			return nil, fmt.Errorf("%s.%s is not exported", cmd.Package, cmd.Function)
+			return nil, fmt.Errorf("%s.%s is not exported", c.Package, c.Function)
 		}
 		return f, nil
 	}
-	obj := pkg.Scope().Lookup(cmd.GlobalVar)
+	obj := c.pkg().Scope().Lookup(c.GlobalVar)
 	if obj == nil {
-		return nil, fmt.Errorf("%s.%s not found", cmd.Package, cmd.GlobalVar)
+		return nil, fmt.Errorf("%s.%s not found", c.Package, c.GlobalVar)
 	}
 	v, ok := obj.(*types.Var)
 	if !ok {
-		return nil, fmt.Errorf("%s.%s is not a global variable", cmd.Package, cmd.GlobalVar)
+		return nil, fmt.Errorf("%s.%s is not a global variable", c.Package, c.GlobalVar)
 	}
 	if !v.Exported() {
-		return nil, fmt.Errorf("%s.%s is not exported", cmd.Package, cmd.GlobalVar)
+		return nil, fmt.Errorf("%s.%s is not exported", c.Package, c.GlobalVar)
 	}
 	methods := types.NewMethodSet(v.Type())
-	sel := methods.Lookup(pkg, cmd.Function)
+	sel := methods.Lookup(c.pkg(), c.Function)
 	if sel == nil {
-		return nil, fmt.Errorf("%s.%s.%s not found", cmd.Package, cmd.GlobalVar, cmd.Function)
+		return nil, fmt.Errorf("%s.%s.%s not found", c.Package, c.GlobalVar, c.Function)
 	}
 	f, ok := sel.Obj().(*types.Func)
 	if !ok {
-		return nil, fmt.Errorf("%s.%s.%s is not a method", cmd.Package, cmd.GlobalVar, cmd.Function)
+		return nil, fmt.Errorf("%s.%s.%s is not a method", c.Package, c.GlobalVar, c.Function)
 	}
 	if !f.Exported() {
-		return nil, fmt.Errorf("%s.%s.%s is not exported", cmd.Package, cmd.GlobalVar, cmd.Function)
+		return nil, fmt.Errorf("%s.%s.%s is not exported", c.Package, c.GlobalVar, c.Function)
 	}
 	return f, nil
 }
 
-func gen(cmd Command, path string, data templateData) error {
+func gen(path string, data templateData) error {
 	f, err := createFile(path)
 	if err != nil {
 		return err
@@ -217,27 +236,38 @@ type templateData struct {
 	Imports      map[string]struct{}
 	ArgConvFuncs []string
 	ArgInits     []string
+
+	cmd *Command
 }
 
-func compileData(cmd Command, pkgName string, sig *types.Signature) (templateData, error) {
+func (c *Command) compileData() (templateData, error) {
+	f, err := c.getFunc()
+	if err != nil {
+		return templateData{}, err
+	}
+	// guaranteed to work per types.Cloud docs.
+	sig := f.Type().(*types.Signature)
+
 	data := templateData{
-		PkgName:    pkgName,
-		Func:       cmd.Function,
-		GlobalVar:  cmd.GlobalVar,
+		PkgName:    c.pkg().Name(),
+		Func:       c.Function,
+		GlobalVar:  c.GlobalVar,
 		HasLen:     hasLen(sig.Results()),
 		SrcIdx:     -1,
 		DstIdx:     -1,
 		ParamTypes: map[types.Type]struct{}{},
 		Imports: map[string]struct{}{
-			cmd.Package: struct{}{},
-			"log":       struct{}{},
-			"os":        struct{}{},
+			c.Package: struct{}{},
+			"log":     struct{}{},
+			"os":      struct{}{},
+			"fmt":     struct{}{},
 		},
+		cmd: c,
 	}
 	if err := data.parseResults(sig.Results()); err != nil {
 		return templateData{}, err
 	}
-	if dst, src, ok := checkSrcDst(sig.Params()); ok {
+	if dst, src, ok := c.checkSrcDst(sig.Params()); ok {
 		if err := data.setSrcDst(dst, src, sig.Params()); err != nil {
 			return templateData{}, err
 		}
@@ -258,7 +288,7 @@ func (data *templateData) setSrcDst(dst, src int, params *types.Tuple) error {
 	data.SrcIdx = src
 	data.DstIdx = dst
 	srcType := params.At(src).Type()
-	srcH, ok := getSrcHandler(srcType)
+	srcH, ok := data.cmd.srcHandler(srcType)
 	if !ok {
 		return fmt.Errorf("should be impossible: src type %q has no handler", srcType)
 	}
@@ -282,7 +312,7 @@ func (data *templateData) setSrcDst(dst, src int, params *types.Tuple) error {
 		return nil
 	}
 	dstType := params.At(dst).Type()
-	dstH, ok := getDstHandler(dstType)
+	dstH, ok := data.cmd.dstHandler(dstType)
 	if !ok {
 		return fmt.Errorf("should be impossible: dst type %q has no handler", dstType)
 	}
@@ -308,7 +338,7 @@ func (data *templateData) parseParams(params *types.Tuple) error {
 		}
 		p := params.At(x)
 		t := p.Type()
-		conv, ok := getArgConverter(t)
+		conv, ok := data.cmd.argConverter(t)
 		if !ok {
 			return fmt.Errorf("don't understand how to convert arg %q from CLI", p.Name())
 		}
@@ -319,7 +349,7 @@ func (data *templateData) parseParams(params *types.Tuple) error {
 	}
 	data.Args = strings.Join(args, ", ")
 	for t := range data.ParamTypes {
-		converter, _ := getArgConverter(t)
+		converter, _ := data.cmd.argConverter(t)
 		data.ArgConvFuncs = append(data.ArgConvFuncs, converter.Func)
 		for _, imp := range converter.Imports {
 			data.Imports[imp] = struct{}{}
@@ -331,17 +361,17 @@ func (data *templateData) parseParams(params *types.Tuple) error {
 	return nil
 }
 
-func checkSrcDst(params *types.Tuple) (dst, src int, ok bool) {
+func (c *Command) checkSrcDst(params *types.Tuple) (dst, src int, ok bool) {
 	dst, src = -1, -1
 	for x := 0; x < params.Len(); x++ {
 		p := params.At(x)
 		switch p.Name() {
 		case "dst":
-			if isDstType(p.Type()) {
+			if c.isDstType(p.Type()) {
 				dst = x
 			}
 		default:
-			if src == -1 && isSrcType(p.Type()) {
+			if src == -1 && c.isSrcType(p.Type()) {
 				src = x
 			}
 		}
@@ -352,13 +382,13 @@ func checkSrcDst(params *types.Tuple) (dst, src int, ok bool) {
 	return -1, -1, false
 }
 
-func isDstType(t types.Type) bool {
-	_, ok := getDstHandler(t)
+func (c *Command) isDstType(t types.Type) bool {
+	_, ok := c.dstHandler(t)
 	return ok
 }
 
-func isSrcType(t types.Type) bool {
-	_, ok := getSrcHandler(t)
+func (c *Command) isSrcType(t types.Type) bool {
+	_, ok := c.srcHandler(t)
 	return ok
 }
 
@@ -370,11 +400,11 @@ func isByteArray(t types.Type) bool {
 	return types.Identical(arr.Elem(), types.Typ[types.Byte])
 }
 
-func isReader(t types.Type) bool {
-	return types.Implements(t, ioReader)
+func (c *Command) isReader(t types.Type) bool {
+	return types.Implements(t, c.ioReader)
 }
 
-func hasReader(t types.Type) bool {
+func (c *Command) hasReader(t types.Type) bool {
 	if p, ok := t.(*types.Pointer); ok {
 		t = p.Elem()
 	}
@@ -386,14 +416,14 @@ func hasReader(t types.Type) bool {
 	}
 	for x := 0; x < s.NumFields(); x++ {
 		f := s.Field(x)
-		if f.Exported() && isReader(f.Type()) {
+		if f.Exported() && c.isReader(f.Type()) {
 			return true
 		}
 	}
 	return false
 }
 
-func readerField(t types.Type) string {
+func (c *Command) readerField(t types.Type) string {
 	if p, ok := t.(*types.Pointer); ok {
 		t = p.Elem()
 	}
@@ -405,7 +435,7 @@ func readerField(t types.Type) string {
 	}
 	for x := 0; x < s.NumFields(); x++ {
 		f := s.Field(x)
-		if f.Exported() && isReader(f.Type()) {
+		if f.Exported() && c.isReader(f.Type()) {
 			return f.Name()
 		}
 	}
@@ -429,8 +459,8 @@ var defaultRetHandler = retHandler{
 	},
 }
 
-func getRetHandler(t types.Type) retHandler {
-	for _, h := range retHandlers {
+func (c *Command) retHandler(t types.Type) retHandler {
+	for _, h := range c.retHandlers {
 		if h.Filter(t) {
 			return h
 		}
@@ -438,34 +468,35 @@ func getRetHandler(t types.Type) retHandler {
 	return defaultRetHandler
 }
 
-var retHandlers = []retHandler{
-	{
-		Filter:  isByteArray,
-		Imports: []string{"fmt", "os", "log"},
-		Code: func(types.Type) string {
-			return `
+func (c *Command) setRetHandlers() {
+	c.retHandlers = []retHandler{
+		{
+			Filter:  isByteArray,
+			Imports: []string{"fmt", "os", "log"},
+			Code: func(types.Type) string {
+				return `
 if _, err := fmt.Fprintf(os.Stdout, "%x\n", val); err != nil {
 		log.Fatal(err)
 	}
 `
+			},
 		},
-	},
-	{
-		Filter:  isReader,
-		Imports: []string{"fmt", "os", "log", "io"},
-		Code: func(types.Type) string {
-			return `
+		{
+			Filter:  c.isReader,
+			Imports: []string{"fmt", "os", "log", "io"},
+			Code: func(types.Type) string {
+				return `
 	_, err := io.Copy(os.Stdout, val); err != nil {
 		log.Fatal(err)
 	}
 `
+			},
 		},
-	},
-	{
-		Filter:  hasReader,
-		Imports: []string{"fmt", "os", "log", "io"},
-		Code: func(t types.Type) string {
-			return fmt.Sprintf(`
+		{
+			Filter:  c.hasReader,
+			Imports: []string{"fmt", "os", "log", "io"},
+			Code: func(t types.Type) string {
+				return fmt.Sprintf(`
 	n, err := io.Copy(os.Stdout, val.%s)
 	if err != nil {
 		log.Fatal(err)
@@ -476,9 +507,10 @@ if _, err := fmt.Fprintf(os.Stdout, "%x\n", val); err != nil {
 		}
 	}
 	fmt.Println("")
-`, readerField(t))
+`, c.readerField(t))
+			},
 		},
-	},
+	}
 }
 
 // yay go!  (no, really, I actually do like go's error handling)
@@ -529,7 +561,7 @@ func (data *templateData) parseResults(results *types.Tuple) error {
 }
 
 func (data *templateData) setReturnType(t types.Type) {
-	h := getRetHandler(t)
+	h := data.cmd.retHandler(t)
 	data.PrintVal = h.Code(t)
 	for _, imp := range h.Imports {
 		data.Imports[imp] = struct{}{}
@@ -578,11 +610,9 @@ type srcHandler struct {
 	StdinToSrc string
 }
 
-var srcHandlers []srcHandler
-
 // have to do it this way since some types won't work in maps.
-func getSrcHandler(t types.Type) (srcHandler, bool) {
-	for _, h := range srcHandlers {
+func (c *Command) srcHandler(t types.Type) (srcHandler, bool) {
+	for _, h := range c.srcHandlers {
 		if types.Identical(t, h.Type) {
 			return h, true
 		}
@@ -590,8 +620,8 @@ func getSrcHandler(t types.Type) (srcHandler, bool) {
 	return srcHandler{}, false
 }
 
-func setSrcHandlers() {
-	srcHandlers = []srcHandler{
+func (c *Command) setSrcHandlers() {
+	c.srcHandlers = []srcHandler{
 		{
 			Type:    byteSliceType,
 			Imports: []string{"io/ioutil", "log"},
@@ -618,7 +648,7 @@ func stdinToSrc() []byte {
 }
 `},
 		{
-			Type:    ioReaderType,
+			Type:    c.ioReaderType,
 			Imports: []string{"io", "os", "log"},
 			Init:    "var src io.Reader",
 			ArgToSrc: `
@@ -658,10 +688,8 @@ type dstHandler struct {
 	ToStdout string
 }
 
-var dstHandlers []dstHandler
-
-func getDstHandler(t types.Type) (dstHandler, bool) {
-	for _, h := range dstHandlers {
+func (c *Command) dstHandler(t types.Type) (dstHandler, bool) {
+	for _, h := range c.dstHandlers {
 		if types.Identical(t, h.Type) {
 			return h, true
 		}
@@ -669,10 +697,10 @@ func getDstHandler(t types.Type) (dstHandler, bool) {
 	return dstHandler{}, false
 }
 
-func setDstHandlers() {
-	dstHandlers = []dstHandler{
+func (c *Command) setDstHandlers() {
+	c.dstHandlers = []dstHandler{
 		{
-			Type:    ptrBytesBufferType,
+			Type:    c.pBufferType,
 			Imports: []string{"bytes", "io", "fmt"},
 			Init:    "dst := &bytes.Buffer{}",
 			ToStdout: `
@@ -683,7 +711,7 @@ func setDstHandlers() {
 	fmt.Println("")
 `},
 		{
-			Type:    ioWriterType,
+			Type:    c.ioWriterType,
 			Imports: []string{"os", "fmt"},
 			Init:    "dst := os.Stdout",
 			ToStdout: `
@@ -718,12 +746,8 @@ type converter struct {
 	Func string
 }
 
-// argConverters is a map of types to helper functions that we dump at the
-// end of the file to make the rest of the file easier to construct and read.  The values
-var argConverters []converter
-
-func getArgConverter(t types.Type) (converter, bool) {
-	for _, c := range argConverters {
+func (c *Command) argConverter(t types.Type) (converter, bool) {
+	for _, c := range c.argConverters {
 		if types.Identical(t, c.Type) {
 			return c, true
 		}
@@ -731,8 +755,8 @@ func getArgConverter(t types.Type) (converter, bool) {
 	return converter{}, false
 }
 
-func setArgConverters() {
-	argConverters = []converter{
+func (c *Command) setArgConverters() {
+	c.argConverters = []converter{
 		{
 			// string is a special flower because it doesn't need a converter, but we
 			// keep an empty converter here so that we don't need to special case it
@@ -819,4 +843,23 @@ func argToUint(s string) uint64 {
 }
 `},
 	}
+}
+
+func (c *Command) dir() string {
+	return filepath.Join(c.Cache, filepath.FromSlash(c.Package))
+}
+
+func (c *Command) script() string {
+	name := c.Function
+	if c.GlobalVar != "" {
+		name = c.GlobalVar + "." + c.Function
+	}
+	return filepath.Join(c.dir(), name+".go")
+}
+
+func createFile(path string) (f *os.File, err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
+	return os.Create(path)
 }
