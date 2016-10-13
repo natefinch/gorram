@@ -15,11 +15,6 @@ import (
 
 func TestParseAndRun(t *testing.T) {
 	t.Parallel()
-	dir, err := ioutil.TempDir("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(dir)
 	tests := []struct {
 		args     []string
 		expected string
@@ -29,15 +24,21 @@ func TestParseAndRun(t *testing.T) {
 	for _, test := range tests {
 		t.Run(strings.Join(test.args, " "), func(t *testing.T) {
 			t.Parallel()
+			dir, err := ioutil.TempDir("", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(dir)
 			stderr := &bytes.Buffer{}
 			stdout := &bytes.Buffer{}
 			env := OSEnv{
 				Stderr: stderr,
 				Stdout: stdout,
 				Args:   append([]string{"gorram"}, test.args...),
+				Env:    map[string]string{CacheEnv: dir},
 			}
 			code := ParseAndRun(env)
-			checkCode(code, filename, t)
+			checkCode(code, dir, t)
 			out := stdout.String()
 			if out != test.expected {
 				t.Errorf("Expected %q but got %q", test.expected, out)
@@ -65,9 +66,10 @@ func TestTimeNow(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 		Args:   []string{"gorram", "time", "Now"},
+		Env:    map[string]string{CacheEnv: dir},
 	}
 	code := ParseAndRun(env)
-	checkCode(code, filename, t)
+	checkCode(code, dir, t)
 	out := stdout.String()
 	expected := fmt.Sprint(time.Now()) + "\n"
 
@@ -103,9 +105,10 @@ func TestJsonIndentStdin(t *testing.T) {
 		Stdout: stdout,
 		Stdin:  strings.NewReader(`{"foo":"bar"}`),
 		Args:   []string{"gorram", "encoding/json", "Indent", "", "  "},
+		Env:    map[string]string{CacheEnv: dir},
 	}
 	code := ParseAndRun(env)
-	checkCode(code, filename, t)
+	checkCode(code, dir, t)
 	out := stdout.String()
 	expected := `
 {
@@ -142,9 +145,10 @@ func TestNetHTTPGet(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 		Args:   []string{"gorram", "net/http", "Get", ts.URL},
+		Env:    map[string]string{CacheEnv: dir},
 	}
 	code := ParseAndRun(env)
-	checkCode(code, filename, t)
+	checkCode(code, dir, t)
 	out := stdout.String()
 	expected := "Hello, client\n\n"
 	if out != expected {
@@ -177,9 +181,10 @@ func TestNetHTTPGetWithTemplate(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 		Args:   []string{"gorram", "-t", "{{.Status}}", "net/http", "Get", ts.URL},
+		Env:    map[string]string{CacheEnv: dir},
 	}
 	code := ParseAndRun(env)
-	checkCode(code, filename, t)
+	checkCode(code, dir, t)
 
 	out := stdout.String()
 	expected := "200 OK\n"
@@ -217,9 +222,10 @@ func TestNetHTTPGetWithFileTemplate(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 		Args:   []string{"gorram", "-t", filename, "net/http", "Get", ts.URL},
+		Env:    map[string]string{CacheEnv: dir},
 	}
 	code := ParseAndRun(env)
-	checkCode(code, filename, t)
+	checkCode(code, dir, t)
 
 	out := stdout.String()
 	expected := "200 OK\n"
@@ -252,9 +258,10 @@ func TestBase64EncodeToStringFromFilename(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 		Args:   []string{"gorram", "encoding/base64", "StdEncoding.EncodeToString", filename},
+		Env:    map[string]string{CacheEnv: dir},
 	}
 	code := ParseAndRun(env)
-	checkCode(code, filename, t)
+	checkCode(code, dir, t)
 
 	out := stdout.String()
 	expected := "MTIzNDU=\n"
@@ -266,15 +273,34 @@ func TestBase64EncodeToStringFromFilename(t *testing.T) {
 	}
 }
 
-func checkCode(code int, filename string, t *testing.T) {
+func checkCode(code int, dir string, t *testing.T) {
 	if code == 0 {
 		return
 	}
 	t.Errorf("unexpected exit code: %v", code)
-	b, err := ioutil.ReadFile(filename)
+
+	// there should only be one file under the cache, so we can assume any one
+	// we find is the right one.
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		fmt.Println(path)
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if filepath.Ext(path) != ".go" {
+			return nil
+		}
+		b, err := ioutil.ReadFile(path)
+		if err != nil {
+			t.Logf("error reading generated file %q: %v", path, err)
+		}
+		t.Log("Generated file contents:")
+		t.Log(string(b))
+		return nil
+	})
 	if err != nil {
-		t.Logf("error reading generated file %q: %v", filename, err)
+		t.Errorf("error finding generated file: %v", err)
 	}
-	t.Log("Generated file contents:")
-	t.Log(string(b))
 }
