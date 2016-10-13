@@ -37,9 +37,7 @@ func TestParseAndRun(t *testing.T) {
 				Args:   append([]string{"gorram"}, test.args...),
 			}
 			code := ParseAndRun(env)
-			if code != 0 {
-				t.Errorf("unexpected exit code: %v", code)
-			}
+			checkCode(code, filename, t)
 			out := stdout.String()
 			if out != test.expected {
 				t.Errorf("Expected %q but got %q", test.expected, out)
@@ -69,9 +67,7 @@ func TestTimeNow(t *testing.T) {
 		Args:   []string{"gorram", "time", "Now"},
 	}
 	code := ParseAndRun(env)
-	if code != 0 {
-		t.Errorf("unexpected exit code: %v", code)
-	}
+	checkCode(code, filename, t)
 	out := stdout.String()
 	expected := fmt.Sprint(time.Now()) + "\n"
 
@@ -109,9 +105,7 @@ func TestJsonIndentStdin(t *testing.T) {
 		Args:   []string{"gorram", "encoding/json", "Indent", "", "  "},
 	}
 	code := ParseAndRun(env)
-	if code != 0 {
-		t.Errorf("unexpected exit code: %v", code)
-	}
+	checkCode(code, filename, t)
 	out := stdout.String()
 	expected := `
 {
@@ -150,9 +144,7 @@ func TestNetHTTPGet(t *testing.T) {
 		Args:   []string{"gorram", "net/http", "Get", ts.URL},
 	}
 	code := ParseAndRun(env)
-	if code != 0 {
-		t.Errorf("unexpected exit code: %v", code)
-	}
+	checkCode(code, filename, t)
 	out := stdout.String()
 	expected := "Hello, client\n\n"
 	if out != expected {
@@ -187,9 +179,7 @@ func TestNetHTTPGetWithTemplate(t *testing.T) {
 		Args:   []string{"gorram", "-t", "{{.Status}}", "net/http", "Get", ts.URL},
 	}
 	code := ParseAndRun(env)
-	if code != 0 {
-		t.Errorf("unexpected exit code: %v", code)
-	}
+	checkCode(code, filename, t)
 
 	out := stdout.String()
 	expected := "200 OK\n"
@@ -229,9 +219,7 @@ func TestNetHTTPGetWithFileTemplate(t *testing.T) {
 		Args:   []string{"gorram", "-t", filename, "net/http", "Get", ts.URL},
 	}
 	code := ParseAndRun(env)
-	if code != 0 {
-		t.Errorf("unexpected exit code: %v", code)
-	}
+	checkCode(code, filename, t)
 
 	out := stdout.String()
 	expected := "200 OK\n"
@@ -266,9 +254,7 @@ func TestBase64EncodeToStringFromFilename(t *testing.T) {
 		Args:   []string{"gorram", "encoding/base64", "StdEncoding.EncodeToString", filename},
 	}
 	code := ParseAndRun(env)
-	if code != 0 {
-		t.Errorf("unexpected exit code: %v", code)
-	}
+	checkCode(code, filename, t)
 
 	out := stdout.String()
 	expected := "MTIzNDU=\n"
@@ -278,4 +264,17 @@ func TestBase64EncodeToStringFromFilename(t *testing.T) {
 	if msg := stderr.String(); msg != "" {
 		t.Errorf("Expected no stderr output but got %q", msg)
 	}
+}
+
+func checkCode(code int, filename string, t *testing.T) {
+	if code == 0 {
+		return
+	}
+	t.Errorf("unexpected exit code: %v", code)
+	b, err := ioutil.ReadFile(filename)
+	if err != nil {
+		t.Logf("error reading generated file %q: %v", filename, err)
+	}
+	t.Log("Generated file contents:")
+	t.Log(string(b))
 }

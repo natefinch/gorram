@@ -31,22 +31,27 @@ func TestTimeNow(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 	}
-	err = Run(&Command{
+	c := &Command{
 		Package:  "time",
 		Function: "Now",
 		Cache:    dir,
 		Env:      env,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
 	}
+	err = Run(c)
+	checkRunErr(err, c.script(), t)
 	out := stdout.String()
 	expected := fmt.Sprint(time.Now()) + "\n"
+
+	// we have to fudge the test since obviously the milliseconds won't be the
+	// same, and if we're unlucky, bigger units also won't be the same.
 	if !strings.HasPrefix(out, expected[:15]) {
-		t.Fatalf("Expected ~%q but got %q", expected, out)
+		t.Errorf("Expected ~%q but got %q", expected, out)
 	}
 	if !strings.HasSuffix(out, expected[len(expected)-9:]) {
-		t.Fatalf("Expected ~%q but got %q", expected, out)
+		t.Errorf("Expected ~%q but got %q", expected, out)
+	}
+	if msg := stderr.String(); msg != "" {
+		t.Errorf("Expected no stderr output but got %q", msg)
 	}
 }
 
@@ -65,20 +70,22 @@ func TestMathSqrt(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 	}
-	err = Run(&Command{
+	c := &Command{
 		Package:  "math",
 		Function: "Sqrt",
 		Args:     []string{"25.4"},
 		Cache:    dir,
 		Env:      env,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
 	}
+	err = Run(c)
+	checkRunErr(err, c.script(), t)
 	out := stdout.String()
 	expected := "5.039841267341661\n"
 	if out != expected {
-		t.Fatalf("Expected %q but got %q", expected, out)
+		t.Errorf("Expected %q but got %q", expected, out)
+	}
+	if msg := stderr.String(); msg != "" {
+		t.Errorf("Expected no stderr output but got %q", msg)
 	}
 }
 
@@ -101,18 +108,15 @@ func TestJsonIndentStdin(t *testing.T) {
 		Stdout: stdout,
 		Stdin:  stdin,
 	}
-	err = Run(&Command{
+	c := &Command{
 		Package:  "encoding/json",
 		Function: "Indent",
 		Args:     []string{"", "  "},
 		Cache:    dir,
 		Env:      env,
-	})
-	if err != nil {
-		t.Logf("stderr: %s", stderr.String())
-		t.Logf("stdout: %s", stderr.String())
-		t.Fatalf("unexpected error: %v", err)
 	}
+	err = Run(c)
+	checkRunErr(err, c.script(), t)
 	out := stdout.String()
 	expected := `
 {
@@ -120,7 +124,10 @@ func TestJsonIndentStdin(t *testing.T) {
 }
 `[1:]
 	if out != expected {
-		t.Fatalf("Expected %q but got %q", expected, out)
+		t.Errorf("Expected %q but got %q", expected, out)
+	}
+	if msg := stderr.String(); msg != "" {
+		t.Errorf("Expected no stderr output but got %q", msg)
 	}
 }
 
@@ -146,20 +153,22 @@ func TestNetHTTPGet(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 	}
-	err = Run(&Command{
+	c := &Command{
 		Package:  "net/http",
 		Function: "Get",
 		Args:     []string{ts.URL},
 		Cache:    dir,
 		Env:      env,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
 	}
+	err = Run(c)
+	checkRunErr(err, c.script(), t)
 	out := stdout.String()
 	expected := "Hello, client\n\n"
 	if out != expected {
-		t.Fatalf("Expected %q but got %q", expected, out)
+		t.Errorf("Expected %q but got %q", expected, out)
+	}
+	if msg := stderr.String(); msg != "" {
+		t.Errorf("Expected no stderr output but got %q", msg)
 	}
 }
 
@@ -185,21 +194,23 @@ func TestNetHTTPGetWithTemplate(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 	}
-	err = Run(&Command{
+	c := &Command{
 		Package:  "net/http",
 		Function: "Get",
 		Args:     []string{ts.URL},
 		Cache:    dir,
 		Env:      env,
 		Template: "{{.Status}}",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
 	}
+	err = Run(c)
+	checkRunErr(err, c.script(), t)
 	out := stdout.String()
 	expected := "200 OK\n"
 	if out != expected {
-		t.Fatalf("Expected %q but got %q", expected, out)
+		t.Errorf("Expected %q but got %q", expected, out)
+	}
+	if msg := stderr.String(); msg != "" {
+		t.Errorf("Expected no stderr output but got %q", msg)
 	}
 }
 
@@ -224,21 +235,23 @@ func TestBase64EncodeToStringFromFilename(t *testing.T) {
 		Stderr: stderr,
 		Stdout: stdout,
 	}
-	err = Run(&Command{
+	c := &Command{
 		Package:   "encoding/base64",
 		GlobalVar: "StdEncoding",
 		Function:  "EncodeToString",
 		Args:      []string{filename},
 		Cache:     dir,
 		Env:       env,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
 	}
+	err = Run(c)
+	checkRunErr(err, c.script(), t)
 	out := stdout.String()
 	expected := "MTIzNDU=\n"
 	if out != expected {
-		t.Fatalf("Expected %q but got %q", expected, out)
+		t.Errorf("Expected %q but got %q", expected, out)
+	}
+	if msg := stderr.String(); msg != "" {
+		t.Errorf("Expected no stderr output but got %q", msg)
 	}
 }
 
@@ -283,9 +296,7 @@ func main() {
 	}
 
 	err = Run(c)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
+	checkRunErr(err, path, t)
 	out := stdout.String()
 	expected := "Hi!\n"
 	if out != expected {
@@ -343,9 +354,7 @@ func TestVersionOverwrite(t *testing.T) {
 			}
 
 			err = Run(c)
-			if err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
+			checkRunErr(err, path, t)
 			out := stdout.String()
 			expected := "5\n"
 			if out != expected {
@@ -361,19 +370,31 @@ func TestVersionOverwrite(t *testing.T) {
 func TestVersionMatches(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "foo.go", []byte(`
-package main
+	package main
 
-import "fmt"
+	import "fmt"
 
-const version = "`+version+`"
-func main() {
-	fmt.Println("Hi!")
-}
-`), 0)
+	const version = "`+version+`"
+	func main() {
+		fmt.Println("Hi!")
+	}`), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !versionMatches(f) {
 		t.Fatal("Expected version to match but it did not.")
 	}
+}
+
+func checkRunErr(err error, filename string, t *testing.T) {
+	if err == nil {
+		return
+	}
+	t.Errorf("unexpected error: %v", err)
+	b, err := ioutil.ReadFile(filename)
+	if err != nil {
+		t.Logf("error reading generated file %q: %v", filename, err)
+	}
+	t.Log("Generated file contents:")
+	t.Log(string(b))
 }
