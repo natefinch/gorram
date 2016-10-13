@@ -263,7 +263,6 @@ func TestVersionKeep(t *testing.T) {
 		Env:      env,
 	}
 	path := c.script()
-	fmt.Println(path)
 	err = os.MkdirAll(filepath.Dir(path), 0700)
 	if err != nil {
 		t.Fatal(err)
