@@ -1,8 +1,12 @@
+// Package run provides the logic for generating code for the gorram CLI tool.
 package run // import "npf.io/gorram/run"
 
 import (
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"go/types"
 	"io"
 	"os"
@@ -13,6 +17,13 @@ import (
 
 	"golang.org/x/tools/go/loader"
 )
+
+// version is the string that stamps the generated files. If the files should
+// change, you must change the version.  The actual format of the version
+// doesn't matter, as long as it's different from earlier versions, but it's
+// nice to keep it in <semver>  <timestamp> format so that it has some human
+// meaning.
+const version = "0.9.0  2016-10-12 16:25:09.416829333"
 
 // Used for type comparison.
 // These are ok to keep global since they're static.
@@ -104,7 +115,7 @@ func (c *Command) run(path, template string) error {
 func (c *Command) Generate() (path string, err error) {
 	path = c.script()
 	if !c.Regen {
-		if _, err := os.Stat(path); err == nil {
+		if fileVersionOK(path) {
 			return path, nil
 		}
 	}
@@ -135,6 +146,41 @@ func (c *Command) Generate() (path string, err error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func fileVersionOK(path string) bool {
+	fset := token.NewFileSet() // positions are relative to fset
+
+	// Parse the file containing this very example
+	// but stop after processing the imports.
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		return false
+	}
+	return versionMatches(f)
+}
+
+func versionMatches(f *ast.File) bool {
+	// or I could just do a string.Contains, but where's the fun in that?
+	ver, ok := f.Scope.Objects["version"]
+	if !ok {
+		return false
+	}
+	if ver.Kind != ast.Con {
+		return false
+	}
+	vs, ok := ver.Decl.(*ast.ValueSpec)
+	if !ok {
+		return false
+	}
+	if len(vs.Values) != 1 {
+		return false
+	}
+	lit, ok := vs.Values[0].(*ast.BasicLit)
+	if !ok {
+		return false
+	}
+	return lit.Value == `"`+version+`"`
 }
 
 func (c *Command) pkg() *types.Package {
@@ -216,6 +262,7 @@ func gen(path string, data templateData) error {
 }
 
 type templateData struct {
+	Version      string
 	Results      string
 	Args         string
 	NumCLIArgs   int
@@ -249,6 +296,7 @@ func (c *Command) compileData() (templateData, error) {
 	sig := f.Type().(*types.Signature)
 
 	data := templateData{
+		Version:    version,
 		PkgName:    c.pkg().Name(),
 		Func:       c.Function,
 		GlobalVar:  c.GlobalVar,

@@ -3,6 +3,8 @@ package run
 import (
 	"bytes"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
@@ -237,5 +239,142 @@ func TestBase64EncodeToStringFromFilename(t *testing.T) {
 	expected := "MTIzNDU=\n"
 	if out != expected {
 		t.Fatalf("Expected %q but got %q", expected, out)
+	}
+}
+
+func TestVersionKeep(t *testing.T) {
+	t.Parallel()
+	dir, err := ioutil.TempDir("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(dir)
+	stderr := &bytes.Buffer{}
+	stdout := &bytes.Buffer{}
+	env := Env{
+		Stderr: stderr,
+		Stdout: stdout,
+	}
+
+	c := &Command{
+		Package:  "time",
+		Function: "Now",
+		Cache:    dir,
+		Env:      env,
+	}
+	path := c.script()
+	fmt.Println(path)
+	err = os.MkdirAll(filepath.Dir(path), 0700)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = ioutil.WriteFile(path, []byte(`
+package main
+
+import "fmt"
+
+const version = "`+version+`"
+func main() {
+	fmt.Println("Hi!")
+}
+`), 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = Run(c)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	out := stdout.String()
+	expected := "Hi!\n"
+	if out != expected {
+		t.Errorf("Expected %q but got %q", expected, out)
+	}
+	if msg := stderr.String(); msg != "" {
+		t.Errorf("Expected no stderr output but got %q", msg)
+	}
+}
+
+func TestVersionOverwrite(t *testing.T) {
+	t.Parallel()
+	versions := map[string]string{
+		"EmptyVersion":     "",
+		"TruncatedVersion": `const version = "` + version[:len(version)-1] + `"`,
+		"CommentedVersion": `// const version = "` + version + `"`,
+	}
+
+	for name, ver := range versions {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir, err := ioutil.TempDir("", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(dir)
+			stderr := &bytes.Buffer{}
+			stdout := &bytes.Buffer{}
+			env := Env{
+				Stderr: stderr,
+				Stdout: stdout,
+			}
+
+			c := &Command{
+				Package:  "math",
+				Function: "Sqrt",
+				Args:     []string{"25"},
+				Cache:    dir,
+				Env:      env,
+			}
+			path := c.script()
+			err = os.MkdirAll(filepath.Dir(path), 0700)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = ioutil.WriteFile(path, []byte(`
+			package main
+			import "fmt"
+			`+ver+`
+			func main() {
+				fmt.Println("Hi!")
+			}`), 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			err = Run(c)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			out := stdout.String()
+			expected := "5\n"
+			if out != expected {
+				t.Errorf("Expected %q but got %q", expected, out)
+			}
+			if msg := stderr.String(); msg != "" {
+				t.Errorf("Expected no stderr output but got %q", msg)
+			}
+		})
+	}
+}
+
+func TestVersionMatches(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "foo.go", []byte(`
+package main
+
+import "fmt"
+
+const version = "`+version+`"
+func main() {
+	fmt.Println("Hi!")
+}
+`), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !versionMatches(f) {
+		t.Fatal("Expected version to match but it did not.")
 	}
 }

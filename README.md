@@ -25,7 +25,6 @@ dynamically analyzes go code in the stdlib and in your GOPATH.
 Usage: gorram [OPTION] <pkg> <func | var.method> [args...]
 
 Options:
-  -r           regenerate the script generated for the given function
   -t <string>  format output with a go template
   -h, --help   display this help
 
@@ -183,3 +182,9 @@ the struct is an io.Reader, then it will output the contents of that reader.
 
 See the [project page](https://github.com/natefinch/gorram/projects/1) for what's
 being worked on now. 
+
+## Hacking
+
+Gorram requires go 1.7 to run the tests (thank you subtests!)  But only requires
+it builds with earlier versions (at least 1.6, I haven't tried earlier ones, but
+they should be fine, too).

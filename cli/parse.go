@@ -1,3 +1,4 @@
+// Package cli provides a CLI UI for the gorram command line tool.
 package cli // import "npf.io/gorram/cli"
 
 import (
@@ -115,7 +116,6 @@ const usage = `Usage:
 gorram [OPTION] <pkg> <func | var.method> [args...]
 
 Options:
-  -r           regenerate the script generated for the given function
   -t <string>  format output with a go template
   -h, --help   display this help
 

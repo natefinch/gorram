@@ -12,6 +12,8 @@ import (
 	{{if eq .DstIdx -1}}"text/template"{{end}}
 )
 
+const version = "{{.Version}}"
+
 func main() {
 	log.SetFlags(0)
 
