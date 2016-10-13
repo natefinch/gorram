@@ -42,7 +42,7 @@ func TestParseAndRun(t *testing.T) {
 			}
 			out := stdout.String()
 			if out != test.expected {
-				t.Fatalf("Expected %q but got %q", test.expected, out)
+				t.Errorf("Expected %q but got %q", test.expected, out)
 			}
 			if msg := stderr.String(); msg != "" {
 				t.Errorf("Expected no stderr output but got %q", msg)
@@ -119,7 +119,7 @@ func TestJsonIndentStdin(t *testing.T) {
 }
 `[1:]
 	if out != expected {
-		t.Fatalf("Expected %q but got %q", expected, out)
+		t.Errorf("Expected %q but got %q", expected, out)
 	}
 	if msg := stderr.String(); msg != "" {
 		t.Errorf("Expected no stderr output but got %q", msg)
@@ -156,7 +156,7 @@ func TestNetHTTPGet(t *testing.T) {
 	out := stdout.String()
 	expected := "Hello, client\n\n"
 	if out != expected {
-		t.Fatalf("Expected %q but got %q", expected, out)
+		t.Errorf("Expected %q but got %q", expected, out)
 	}
 	if msg := stderr.String(); msg != "" {
 		t.Errorf("Expected no stderr output but got %q", msg)
@@ -194,7 +194,7 @@ func TestNetHTTPGetWithTemplate(t *testing.T) {
 	out := stdout.String()
 	expected := "200 OK\n"
 	if out != expected {
-		t.Fatalf("Expected %q but got %q", expected, out)
+		t.Errorf("Expected %q but got %q", expected, out)
 	}
 	if msg := stderr.String(); msg != "" {
 		t.Errorf("Expected no stderr output but got %q", msg)
@@ -236,7 +236,7 @@ func TestNetHTTPGetWithFileTemplate(t *testing.T) {
 	out := stdout.String()
 	expected := "200 OK\n"
 	if out != expected {
-		t.Fatalf("Expected %q but got %q", expected, out)
+		t.Errorf("Expected %q but got %q", expected, out)
 	}
 	if msg := stderr.String(); msg != "" {
 		t.Errorf("Expected no stderr output but got %q", msg)
@@ -270,13 +270,10 @@ func TestBase64EncodeToStringFromFilename(t *testing.T) {
 		t.Errorf("unexpected exit code: %v", code)
 	}
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	out := stdout.String()
 	expected := "MTIzNDU=\n"
 	if out != expected {
-		t.Fatalf("Expected %q but got %q", expected, out)
+		t.Errorf("Expected %q but got %q", expected, out)
 	}
 	if msg := stderr.String(); msg != "" {
 		t.Errorf("Expected no stderr output but got %q", msg)
