@@ -1,4 +1,4 @@
-package main
+package main // import "npf.io/gorram"
 
 import (
 	"os"
