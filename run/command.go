@@ -305,10 +305,10 @@ func (c *Command) compileData() (templateData, error) {
 		DstIdx:     -1,
 		ParamTypes: map[types.Type]struct{}{},
 		Imports: map[string]struct{}{
-			c.Package: struct{}{},
-			"log":     struct{}{},
-			"os":      struct{}{},
-			"fmt":     struct{}{},
+			c.Package: {},
+			"log":     {},
+			"os":      {},
+			"fmt":     {},
 		},
 		cmd: c,
 	}
