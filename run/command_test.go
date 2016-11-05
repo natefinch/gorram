@@ -255,6 +255,43 @@ func TestBase64EncodeToStringFromFilename(t *testing.T) {
 	}
 }
 
+// func Stdout.Write(b []byte) (n int, err error)
+// Tests stdin to []byte argument.
+// Tests a function with no printable return value.
+func TestStdoutWrite(t *testing.T) {
+	t.Parallel()
+	dir, err := ioutil.TempDir("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(dir)
+	stderr := &bytes.Buffer{}
+	stdout := &bytes.Buffer{}
+	stdin := strings.NewReader(`hi!`)
+	env := Env{
+		Stderr: stderr,
+		Stdout: stdout,
+		Stdin:  stdin,
+	}
+	c := &Command{
+		Package:   "os",
+		GlobalVar: "Stdout",
+		Function:  "Write",
+		Cache:     dir,
+		Env:       env,
+	}
+	err = Run(c)
+	checkRunErr(err, c.script(), t)
+	out := stdout.String()
+	expected := `hi!`
+	if out != expected {
+		t.Errorf("Expected %q but got %q", expected, out)
+	}
+	if msg := stderr.String(); msg != "" {
+		t.Errorf("Expected no stderr output but got %q", msg)
+	}
+}
+
 func TestVersionKeep(t *testing.T) {
 	t.Parallel()
 	dir, err := ioutil.TempDir("", "")

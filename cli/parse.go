@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"os/exec"
 	"strings"
 
 	"npf.io/gorram/run"
@@ -43,6 +44,12 @@ func ParseAndRun(env OSEnv) int {
 		return 2
 	}
 	if err := run.Run(c); err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
+			// if there's a problem running os/Exec commands, we'll have alreday
+			// printed out stdout and stderr, so we can just be silent on this
+			// one
+			return 1
+		}
 		fmt.Fprintln(env.Stderr, err.Error())
 		return 1
 	}

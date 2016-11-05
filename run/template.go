@@ -9,14 +9,19 @@ import (
 {{range $import, $ignored := .Imports -}}
 	"{{$import}}"
 {{end}}
-	{{if eq .DstIdx -1}}"text/template"{{end}}
 )
 
 const version = "{{.Version}}"
 
+
 func main() {
 	log.SetFlags(0)
-
+	{{if not .HasRetVal}}
+	if os.Getenv("GORRAM_TEMPLATE") != "" {
+		log.Fatalf("No return value to use with templates.")
+	}
+	{{end}}
+	
 	{{.SrcInit}}
 
 	{{if gt .NumCLIArgs 0}}
@@ -49,6 +54,7 @@ func main() {
 	{{if ne .DstIdx -1}}
 	{{.DstToStdout}}
 	{{else}}
+	{{if .HasRetVal}}
 	t := os.Getenv("GORRAM_TEMPLATE")
 	if t != "" {
 		tmpl, err := template.New("").Parse(t)
@@ -62,6 +68,7 @@ func main() {
 		fmt.Println("")
 		os.Exit(0)
 	}
+	{{end}}
 	{{.PrintVal}}
 	{{end}}
 }

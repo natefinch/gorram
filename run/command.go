@@ -23,7 +23,7 @@ import (
 // doesn't matter, as long as it's different from earlier versions, but it's
 // nice to keep it in <semver>  <timestamp> format so that it has some human
 // meaning.
-const version = "0.9.0  2016-10-12 16:25:09.416829333"
+const version = "0.9.1  2016-11-04 16:13:09.14020166"
 
 // Used for type comparison.
 // These are ok to keep global since they're static.
@@ -264,6 +264,7 @@ func gen(path string, data templateData) error {
 type templateData struct {
 	Version      string
 	Results      string
+	HasRetVal    bool
 	Args         string
 	NumCLIArgs   int
 	PkgName      string
@@ -308,7 +309,6 @@ func (c *Command) compileData() (templateData, error) {
 			c.Package: {},
 			"log":     {},
 			"os":      {},
-			"fmt":     {},
 		},
 		cmd: c,
 	}
@@ -611,6 +611,9 @@ func (data *templateData) parseResults(results *types.Tuple) error {
 func (data *templateData) setReturnType(t types.Type) {
 	h := data.cmd.retHandler(t)
 	data.PrintVal = h.Code(t)
+	data.HasRetVal = true
+	data.Imports["text/template"] = struct{}{}
+	data.Imports["fmt"] = struct{}{}
 	for _, imp := range h.Imports {
 		data.Imports[imp] = struct{}{}
 	}
