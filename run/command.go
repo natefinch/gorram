@@ -885,7 +885,7 @@ func argToInt64(s string) int64 {
 			Assign:  "arg%d := argToUint64(args[%d])",
 			Imports: []string{"strconv", "log"},
 			Func: `
-func argToUint(s string) uint64 {
+func argToUint64(s string) uint64 {
 	u, err := strconv.ParseUint(s, 0, 64)
 	if err != nil {
 		log.Fatal(err)
