@@ -23,7 +23,7 @@ import (
 // doesn't matter, as long as it's different from earlier versions, but it's
 // nice to keep it in <semver>  <timestamp> format so that it has some human
 // meaning.
-const version = "0.9.1  2016-11-04 16:13:09.14020166"
+const version = "0.9.2  2017-06-17 23:02:43.896500743"
 
 // Used for type comparison.
 // These are ok to keep global since they're static.
@@ -885,7 +885,7 @@ func argToInt64(s string) int64 {
 			Assign:  "arg%d := argToUint64(args[%d])",
 			Imports: []string{"strconv", "log"},
 			Func: `
-func argToUint(s string) uint64 {
+func argToUint64(s string) uint64 {
 	u, err := strconv.ParseUint(s, 0, 64)
 	if err != nil {
 		log.Fatal(err)
