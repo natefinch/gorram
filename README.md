@@ -10,6 +10,11 @@ a Go function.
 
 *Sometimes, magic is just someone spending more time on something than anyone else might reasonably expect.* -Teller
 
+
+## Demo
+
+[![Gorram Demo](https://img.youtube.com/vi/itMAtRGLSEw/maxresdefault.jpg)](https://www.youtube.com/watch?v=itMAtRGLSEw)
+
 ## Installation
 
 ```
