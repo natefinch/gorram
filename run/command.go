@@ -284,6 +284,7 @@ type templateData struct {
 	Imports      map[string]struct{}
 	ArgConvFuncs []string
 	ArgInits     []string
+	Variadic     string
 
 	cmd *Command
 }
@@ -311,6 +312,9 @@ func (c *Command) compileData() (templateData, error) {
 			"os":      {},
 		},
 		cmd: c,
+	}
+	if(sig.Variadic()) {
+		data.Variadic = "..."
 	}
 	if err := data.parseResults(sig.Results()); err != nil {
 		return templateData{}, err
@@ -392,6 +396,9 @@ func (data *templateData) parseParams(params *types.Tuple) error {
 		}
 		args = append(args, fmt.Sprintf("arg%d", pos+1))
 		data.ParamTypes[t] = struct{}{}
+		for _, dep := range conv.Dependencies {
+			data.ParamTypes[dep] = struct{}{}
+		}
 		data.ArgInits = append(data.ArgInits, fmt.Sprintf(conv.Assign, pos+1, pos))
 		pos++
 	}
@@ -795,12 +802,52 @@ type converter struct {
 	// should be named argTo<type> to avoid collision with other conversion
 	// function.
 	Func string
+	// FuncName is just the name of the function declared above so it can be
+	// called from a dynamically created converter
+	FuncName string
+	// Dependencies is a list of type transformations that this type does (for
+	// example, if this converter represents a slice, Dependencies will contain
+	// the type of the slice
+	Dependencies []types.Type
+}
+
+// Dynamically constructs a slice converter.
+// c is a converter for the type of the slice we're currently within
+func sliceConverter(c converter) converter {
+	//Small hack: Not every converter has an associated function, so if c
+	//doesn't have one,no need to call it
+	callFuncOnArg := c.FuncName + "(arg)"
+	if c.FuncName == "" {
+		callFuncOnArg = "arg"
+	}
+
+	return converter{
+		Type: types.NewSlice(c.Type),
+		Assign: "arg%d := argTo" + c.Type.String() + "Slice(args[%d:])",
+		Imports: c.Imports,
+		Func: `
+func argTo` + c.Type.String() + `Slice(s []string) []` + c.Type.String() + ` {
+	result := make([]` + c.Type.String() + `, len(s))
+	for i, arg := range s {
+		result[i] = ` + callFuncOnArg + `
+	}
+	return result
+}
+
+`,
+		FuncName: "argTo" + c.Type.String() + "Slice",
+		Dependencies: []types.Type{c.Type},
+	}
 }
 
 func (c *Command) argConverter(t types.Type) (converter, bool) {
 	for _, c := range c.argConverters {
 		if types.Identical(t, c.Type) {
 			return c, true
+		} else if types.Identical(t, types.NewSlice(c.Type)) {
+			// If our type is a slice, we need to dynamically create a converter from
+			// one of the existing ones
+			return sliceConverter(c), true
 		}
 	}
 	return converter{}, false
@@ -816,9 +863,9 @@ func (c *Command) setArgConverters() {
 			Assign: "arg%d := args[%d]",
 		},
 		{
-			Type:    types.Typ[types.Int],
-			Assign:  "arg%d := argToInt(args[%d])",
-			Imports: []string{"strconv", "log"},
+			Type:     types.Typ[types.Int],
+			Assign:   "arg%d := argToInt(args[%d])",
+			Imports:  []string{"strconv", "log"},
 			Func: `
 func argToInt(s string) int {
 	i, err := strconv.ParseInt(s, 0, 0)
@@ -827,11 +874,13 @@ func argToInt(s string) int {
 	}
 	return int(i)
 }
-`},
+`,
+			FuncName: "argToInt",
+		},
 		{
-			Type:    types.Typ[types.Uint],
-			Assign:  "arg%d := argToUint(args[%d])",
-			Imports: []string{"strconv", "log"},
+			Type:     types.Typ[types.Uint],
+			Assign:   "arg%d := argToUint(args[%d])",
+			Imports:  []string{"strconv", "log"},
 			Func: `
 func argToUint(s string) int {
 	u, err := strconv.ParseUint(s, 0, 0)
@@ -840,11 +889,13 @@ func argToUint(s string) int {
 	}
 	return uint(u)
 }
-`},
+`,
+			FuncName: "argToUint",
+		},
 		{
-			Type:    types.Typ[types.Float64],
-			Assign:  "arg%d := argToFloat64(args[%d])",
-			Imports: []string{"strconv", "log"},
+			Type:     types.Typ[types.Float64],
+			Assign:   "arg%d := argToFloat64(args[%d])",
+			Imports:  []string{"strconv", "log"},
 			Func: `
 func argToFloat64(s string) float64 {
 	f, err := strconv.ParseFloat(s, 64)
@@ -853,11 +904,13 @@ func argToFloat64(s string) float64 {
 	}
 	return f
 }
-`},
+`,
+			FuncName: "argToFloat64",
+		},
 		{
-			Type:    types.Typ[types.Bool],
-			Assign:  "arg%d := argToBool(args[%d])",
-			Imports: []string{"strconv", "log"},
+			Type:     types.Typ[types.Bool],
+			Assign:   "arg%d := argToBool(args[%d])",
+			Imports:  []string{"strconv", "log"},
 			Func: `
 func argToBool(s string) bool {
 	b, err := strconv.ParseBool(s)
@@ -866,11 +919,13 @@ func argToBool(s string) bool {
 	}
 	return b
 }
-`},
+`,
+			FuncName: "argToBool",
+		},
 		{
-			Type:    types.Typ[types.Int64],
-			Assign:  "arg%d := argToInt64(args[%d])",
-			Imports: []string{"strconv", "log"},
+			Type:     types.Typ[types.Int64],
+			Assign:   "arg%d := argToInt64(args[%d])",
+			Imports:  []string{"strconv", "log"},
 			Func: `
 func argToInt64(s string) int64 {
 	i, err := strconv.ParseInt(s, 0, 64)
@@ -879,11 +934,13 @@ func argToInt64(s string) int64 {
 	}
 	return i
 }
-`},
+`,
+			FuncName: "argToInt64",
+		},
 		{
-			Type:    types.Typ[types.Uint64],
-			Assign:  "arg%d := argToUint64(args[%d])",
-			Imports: []string{"strconv", "log"},
+			Type:     types.Typ[types.Uint64],
+			Assign:   "arg%d := argToUint64(args[%d])",
+			Imports:  []string{"strconv", "log"},
 			Func: `
 func argToUint64(s string) uint64 {
 	u, err := strconv.ParseUint(s, 0, 64)
@@ -892,7 +949,9 @@ func argToUint64(s string) uint64 {
 	}
 	return u
 }
-`},
+`,
+			FuncName: "argToUInt64",
+		},
 	}
 }
 
