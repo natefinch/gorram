@@ -122,6 +122,39 @@ func TestUint64(t *testing.T) {
 	}
 }
 
+// Tests uint64 parsing arguments and outputs.
+func TestUint(t *testing.T) {
+	t.Parallel()
+	dir, err := ioutil.TempDir("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(dir)
+	stderr := &bytes.Buffer{}
+	stdout := &bytes.Buffer{}
+	env := Env{
+		Stderr: stderr,
+		Stdout: stdout,
+	}
+	c := &Command{
+		Package:  "npf.io/gorram/run/_testfuncs",
+		Function: "DoubleUint",
+		Args:     []string{"5"},
+		Cache:    dir,
+		Env:      env,
+	}
+	err = Run(c)
+	checkRunErr(err, c.script(), t)
+	out := stdout.String()
+	expected := "10\n"
+	if out != expected {
+		t.Errorf("Expected %q but got %q", expected, out)
+	}
+	if msg := stderr.String(); msg != "" {
+		t.Errorf("Expected no stderr output but got %q", msg)
+	}
+}
+
 // func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error
 // Tests stdin to []byte argument.
 // Tests a dst *bytes.Buffer with a []byte src.
