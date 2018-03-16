@@ -79,7 +79,16 @@ func TestTimeNow(t *testing.T) {
 	if !strings.HasPrefix(out, expected[:15]) {
 		t.Errorf("Expected ~%q but got %q", expected, out)
 	}
-	if !strings.HasSuffix(out, expected[len(expected)-9:]) {
+
+        // Sometimes time formatting includes the monotonic clock reading 
+	// appended to the end (but not always).  This will not be the same 
+	// between tests, so find the appropriate end point.
+	endOfString := len(expected)
+	mClockIdx := strings.Index(expected, "m=")
+	if mClockIdx!= -1 {
+		endOfString = mClockIdx
+	}
+	if !strings.HasSuffix(out[:endOfString], expected[endOfString-9:endOfString]) {
 		t.Errorf("Expected ~%q but got %q", expected, out)
 	}
 	if msg := stderr.String(); msg != "" {
