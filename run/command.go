@@ -833,7 +833,7 @@ func argToInt(s string) int {
 			Assign:  "arg%d := argToUint(args[%d])",
 			Imports: []string{"strconv", "log"},
 			Func: `
-func argToUint(s string) int {
+func argToUint(s string) uint {
 	u, err := strconv.ParseUint(s, 0, 0)
 	if err != nil {
 		log.Fatal(err)
