@@ -49,7 +49,7 @@ func main() {
 	{{.DstInit}}
 
 
-	{{.Results}}{{.PkgName}}.{{if .GlobalVar}}{{.GlobalVar}}.{{end}}{{.Func}}({{.Args}})
+	{{.Results}}{{.PkgName}}.{{if .GlobalVar}}{{.GlobalVar}}.{{end}}{{.Func}}({{.Args}}{{.Variadic}})
 	{{.ErrCheck}}
 	{{if ne .DstIdx -1}}
 	{{.DstToStdout}}
