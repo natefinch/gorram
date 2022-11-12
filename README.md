@@ -1,4 +1,4 @@
-# gorram [![Codeship](https://img.shields.io/codeship/ba651390-71e8-0134-7f3a-1a37cb97ae34.svg?maxAge=0)](https://app.codeship.com/projects/178461) [![Go Report Card](https://goreportcard.com/badge/npf.io/gorram)](https://goreportcard.com/report/npf.io/gorram)
+# gorram [![Codeship](https://img.shields.io/codeship/ba651390-71e8-0134-7f3a-1a37cb97ae34.svg?maxAge=0)](https://app.codeship.com/projects/178461) [![Go Report Card](https://goreportcard.com/badge/npf.io/gorram)](https://goreportcard.com/report/npf.io/gorram) [![go-recipes](https://raw.githubusercontent.com/nikolaydubina/go-recipes/main/badge.svg?raw=true)](https://github.com/nikolaydubina/go-recipes)
 ![river](https://cloud.githubusercontent.com/assets/3185864/18798443/97829e60-81a0-11e6-99a2-d8a788dd9279.jpg)
 
 <sup><sub>image: &copy; [SubSuid](http://subsuid.deviantart.com/art/River-Tam-Speed-Drawing-282223915)</sub></sup>
